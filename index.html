@@ -472,6 +472,20 @@ button.td:focus-visible{outline:2px solid var(--accent);outline-offset:2px;borde
 .row.al3 .a{display:flex;flex-direction:column;align-items:flex-end;gap:3px}
 .tab,.fab{white-space:nowrap}
 .flowcap{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+/* adviesmotor */
+.advl{display:flex;flex-direction:column}
+.adv{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--line)}
+.advl>.adv:first-child{border-top:0;padding-top:4px}
+.adv .grow{flex:1;min-width:0}
+.adv b{display:block;font-size:14.5px;font-weight:700;line-height:1.3}
+.adv small{display:block;font-size:13px;color:var(--muted);line-height:1.4;margin-top:2px}
+.adv .doe,.card .doe{font-size:13.5px;line-height:1.45;margin:6px 0 0}
+.adv .opt{margin:6px 0 0;padding-left:18px;font-size:13.5px;line-height:1.45}
+.adv .opt li{margin:3px 0}
+.adv .opt b{display:inline;font-size:inherit}
+.adv .eff{display:flex;flex-direction:column;gap:2px;margin-top:6px;font-size:13px;font-weight:600}
+.adv .eff .pos{color:var(--good)} .adv .eff .neg{color:var(--bad)}
+.adv .btnrow{margin-top:8px}
 </style>
 
 <header class="top"><div class="row">
@@ -543,6 +557,7 @@ const TODAY = day0(new Date());
 const SCHERMEN = [
   {k:"overzicht", t:"Overzicht", items:[
     ["ov.besteedbaar","Grijs blok \"Besteedbaar deze maand\" met het antwoord","z"],
+    ["ov.advies","Slimste stap nu (advies)","z"],
     ["ov.uitgaven","Waar is het geld heen","z"],
     ["ov.letop","Te doen","z"],
     ["ov.vrij","Wie krijgt het geld","za","Aanpassen: zelf ingevoerde uitgaven bewerken"],
@@ -558,7 +573,7 @@ const SCHERMEN = [
     ["pl.doelen","Doelen & terugbetalingen","za"],
     ["pl.maandplan","Maandplan","z"],
     ["pl.meevallers","Verwacht: extra inkomsten en uitgaven","za","Aanpassen: ook de knop \"+ Verwacht\" op Overzicht"],
-    ["pl.advies","Advies","z"]]},
+    ["pl.advies","Advies (alle adviezen)","z"]]},
   {k:"afschrift", t:"Afschrift", items:[
     ["af.nieuw","Nieuw afschrift toevoegen","a"],
     ["af.blok","Grijs blok \"Afgeschreven\"","z"],
@@ -1400,6 +1415,7 @@ function renderOverzicht(plan, cur){
   </section>`;
 
   return `${Z("ov.besteedbaar") ? hero : ""}
+  ${Z("ov.advies") ? slimsteKaart() : ""}
   ${Z("ov.uitgaven") ? flow : ""}
   ${Z("ov.letop") ? todoCard : ""}
   ${Z("ov.vrij") ? ladder : ""}
@@ -1503,17 +1519,251 @@ function renderPlan(plan){
   </section>` : ""}
   ${items.length && Z("pl.maandplan") ? accCard("pl:maandplan", "Maandplan", "Per loonperiode, 8 periodes vooruit", maandplan) : ""}
   ${Z("pl.meevallers") && (verwRows.length || A("pl.meevallers")) ? `<div data-perm="pl.meevallers">${accCard("pl:meev", "Verwacht", verwRows.length ? `+${eur0(verwacht)} in · −${eur0(geplTot)} uit` : "Nog niets: extra inkomsten of uitgaven", meev)}</div>` : ""}
-  ${Z("pl.advies") ? adviceCard("plan","Advies","Advies uit jullie cijfers: wat eerst moet, waar het knelt en wat jullie kunnen bijsturen. Berekend met vaste regels, niet door een AI.") : ""}`;
+  ${Z("pl.advies") ? adviesKaart() : ""}`;
 }
 
-function adviceCard(key, title, intro){
-  const a = S.advies[key]||{};
-  const inner = `
-    <p class="hint">${esc(intro)}</p>
-    <div class="btnrow"><button class="btn primary" data-advies="${key}">${a.html?"Opnieuw berekenen":"Toon advies"}</button></div>
-    <div class="advice" id="advout-${key}">${a.html||""}</div>`;
-  return `<div id="adv-${key}">${accCard("adv:"+key, title, a.html ? "Advies staat klaar" : "Op verzoek", inner)}</div>`;
+// ---------- adviesmotor: signalen zoeken, rangschikken op euro's en urgentie, doorrekenen met de planner ----------
+// Geen AI: elk advies komt uit jullie eigen cijfers. Waar een advies iets verandert (een datum, een maandbedrag, het vrije
+// budget), rekent de motor met buildPlan uit wat dat oplevert voor de doelen en terugbetalingen, net als "Kan dit?".
+const ADV = {acties:new Map(), n:0};
+const maandJaar = d => MAANDEN_L[d.getMonth()]+" "+d.getFullYear();
+const rond10 = x => Math.ceil(x/10)*10;
+// basistoestand, zoals Overzicht hem ook berekent
+function advBasis(){
+  const p0 = periodN(0), cur = periodCalc(p0);
+  const plan0 = buildPlan(0), vrij = vrijNu(plan0, cur), sp = spending(p0), over = Math.max(0, sp.totaal - vrij);
+  const plan = over>0.5 ? buildPlan(over) : plan0;
+  plan.vrij0 = vrij; plan.sp = sp; plan.over = over;
+  return {p0, cur, plan0, plan, vrij, sp, over, dagen: Math.max(1, daysBetween(TODAY, p0.end)+1), loondag: addDays(p0.end,1)};
 }
+// rekent het plan door met een aanpassing en zet daarna alles terug
+function advSim(B, mod){
+  const cfg = S.config, doelen = S.doelen, extras = S.extras;
+  try{
+    if(mod.vrijMinder) S.config = Object.assign({}, cfg, {vrijBudget: Math.max(0, num(cfg.vrijBudget) - mod.vrijMinder)});
+    if(mod.item){ const m = mod.item, lijst = m.kind==="doel" ? "doelen" : "extras";
+      S[lijst] = S[lijst].map(x => x.id===m.id ? Object.assign({}, x, m.velden) : x); }
+    if(mod.nieuwDoel) S.doelen = S.doelen.concat([mod.nieuwDoel]);
+    return buildPlan(Math.max(0, B.over - (mod.nuMinder||0)));
+  } finally { S.config = cfg; S.doelen = doelen; S.extras = extras; }
+}
+// wat verandert er voor de doelen en terugbetalingen?
+function advEffect(basis, nieuw, alleen){
+  const uit = [];
+  nieuw.items.forEach(n => {
+    if(alleen && !alleen.includes(n.id)) return;
+    const o = basis.items.find(x=>x.id===n.id); if(!o) return;
+    const a = o.klaarDatum, b = n.klaarDatum;
+    if(o.status!=="ok" && n.status==="ok") uit.push({goed:true, t:`${n.naam} haalt ${n.deadline ? "de datum ("+dlang(n.deadline)+")" : "het doel"}${b?", rond in "+maandJaar(b):""}`});
+    else if(o.status==="ok" && n.status!=="ok") uit.push({goed:false, t:`${n.naam} haalt ${n.deadline ? "de datum" : "het doel"} dan niet meer`});
+    else if(a && b && b<a) uit.push({goed:true, t:`${n.naam} rond in ${maandJaar(b)} (nu ${maandJaar(a)})`});
+    else if(a && b && b>a) uit.push({goed:false, t:`${n.naam} rond in ${maandJaar(b)} (nu ${maandJaar(a)})`});
+    else if(!a && b) uit.push({goed:true, t:`${n.naam} rond in ${maandJaar(b)} (nu niet binnen 3 jaar)`});
+  });
+  return uit;
+}
+function advActie(label, perm, run, stijl){
+  const k = "a"+(++ADV.n); ADV.acties.set(k, {run, perm});
+  return `<button type="button" class="btn sm ${stijl||""}" data-advact="${k}">${esc(label)}</button>`;
+}
+function bewaarDoc(coll, src, velden){ return db.doc(coll+"/"+src.id).set(Object.assign({}, src, velden, {id:src.id, bijgewerkt:new Date().toISOString()})); }
+function itemColl(it){ return it.kind==="doel" ? "doelen" : "extras"; }
+function datumVeld(it){ return it.kind==="doel" ? "datum" : "deadline"; }
+// laatste dag van de loonperiode waarin d valt, als ISO-datum
+function periodeEindIso(d){ const s = periodStartFor(d); return iso(addDays(new Date(s.getFullYear(), s.getMonth()+1, s.getDate()), -1)); }
+
+// ---- alle signalen, met score (hoe hoger, hoe belangrijker) ----
+function adviezen(B, scope){
+  const L = [], plan = B.plan, m0 = plan.months[0], m1 = plan.months[1];
+  const spaar = num(S.config.spaarsaldo), buf = num(S.config.buffer||1000), vrijCfg = num(S.config.vrijBudget);
+  const tekortItem = plan.items.find(i=>i.status==="laat") || plan.items.find(i=>i.status==="nooit");
+  const naam1 = tekortItem ? tekortItem.naam : null;
+  const voeg = a => L.push(a);
+
+  if(scope!=="afschrift"){
+    // rekening in gevaar (dag voor dag tot loondag)
+    const g = geldstroom(plan, B.cur);
+    if(g.risico.length){ const som = g.risico.reduce((s,e)=>s+e.risico,0);
+      voeg({td:true, score:5000, lvl:"bad", titel:`Zorg vóór ${dkort(g.risico[0].d)} voor ${eur0(som)} op de rekening`,
+        waarom:`Anders kan ${g.risico.map(e=>e.naam).slice(0,2).join(" en ")} niet betaald worden.`,
+        doen: spaar>=som ? `Zet ${eur0(som)} over van de spaarrekening (nu ${eur0(spaar)}).` : `De spaarrekening (${eur0(spaar)}) is niet genoeg: stel een losse uitgave uit of vraag uitstel bij ${g.risico[0].naam}.`}); }
+    // tekort deze maand
+    if(m0.tekortUit>0.5){
+      voeg({td:true, score:4000, lvl:"bad", titel:`Vul ${eur0(m0.tekortUit)} aan uit het spaargeld`,
+        waarom:`Er gaat deze maand ${eur0(m0.tekortUit)} meer uit dan er binnenkomt. Dat gaat anders volgende maand eerst van het geld voor terugbetalingen en doelen af.`,
+        doen: spaar>=m0.tekortUit ? `Haal het van de spaarrekening (nu ${eur0(spaar)}) en pas het spaarsaldo aan bij Budgetinstellingen.` : `De spaarrekening (${eur0(spaar)}) dekt het niet helemaal; de rest gaat volgende maand af.`,
+        effect:[{goed:true, t:`Volgende maand ${eur0(m1.beschikbaar + (m1.tekortIn||0))} voor terugbetalingen en doelen (nu ${eur0(m1.beschikbaar)})`}]});
+    }
+    // vrij budget
+    if(B.over>0.5){
+      const minder = advEffect(B.plan0, plan).filter(x=>!x.goed);
+      const lagerNu = plan.items.map(n=>{ const o=B.plan0.items.find(x=>x.id===n.id); return {n, d:(o?o.dezeMaand:0)-n.dezeMaand}; }).filter(x=>x.d>0.5).sort((a,b)=>b.d-a.d);
+      voeg({td:true, score:900 + B.over/10, lvl:"warn", titel:`Geen losse uitgaven meer tot ${dkort(B.loondag)}`,
+        waarom:`Er ging ${eur0(B.sp.totaal)} uit aan losse uitgaven; vrij was ${eur0(B.vrij)}. Die ${eur0(B.over)} extra gaat af van het geld voor terugbetalingen en doelen.`,
+        doen: lagerNu.length ? `Wat jullie tot loondag nog besparen, gaat naar ${lagerNu[0].n.naam}.` : `Wat jullie tot loondag nog besparen, gaat naar terugbetalingen en doelen.`,
+        effect: lagerNu.slice(0,2).map(x=>({goed:false, t:`${x.n.naam} krijgt deze maand ${eur0(x.d)} minder`})).concat(minder.slice(0,2))});
+    } else {
+      const rest = B.vrij - B.sp.totaal;
+      if(rest>0.5) voeg({score:8, lvl:"good", titel:`Nog ${eur0(rest)} vrij tot ${dkort(B.loondag)}`,
+        waarom:`Dat is ${eur(rest/B.dagen)} per dag.`, doen:`Binnen dit bedrag blijven houdt het plan op schema.`});
+    }
+    // doelen en terugbetalingen die hun datum niet halen
+    plan.items.filter(i=>i.status==="laat" && i.deadline).forEach(it => {
+      const rest0 = Math.max(0, it.totaal - num(it.kind==="doel" ? it.src.gespaard : it.src.betaald));
+      let left = 0; for(let k=0;k<plan.months.length;k++){ left++; if(plan.months[k].p.end >= it.deadline) break; }
+      const nodig = it.deadline < B.p0.start ? rest0 : rest0/Math.max(1,left);
+      const krijgt = it.alloc.slice(0,left).reduce((s,x)=>s+x,0)/Math.max(1,left);
+      const opties = [], acties = [];
+      // 1) minder vrij budget per maand
+      let stap = null;
+      for(let x=25; x<=vrijCfg; x+=25){ const s = advSim(B, {vrijMinder:x}); const n = s.items.find(y=>y.id===it.id); if(n && n.status==="ok"){ stap = {x, s}; break; } }
+      if(stap){ const bij = advEffect(plan, stap.s).filter(e=>!e.t.startsWith(it.naam));
+        opties.push(`<b>Vrij budget ${eur0(stap.x)} lager</b> (${eur0(vrijCfg-stap.x)} per maand): dan haalt ${esc(it.naam)} de datum.${bij.length?" "+bij.map(e=>esc(e.t)).join("; ")+".":""}`);
+        if(A("in.vrijBudget")) acties.push(advActie(`Vrij budget op ${eur0(vrijCfg-stap.x)}`, "in.vrijBudget", () => db.doc("config/main").set(Object.assign({}, S.config, {vrijBudget: vrijCfg-stap.x}))));
+      }
+      // 2) hogere prioriteit
+      if(it.prio>1){ const s = advSim(B, {item:{id:it.id, kind:it.kind, velden:{prio:1}}}); const n = s.items.find(y=>y.id===it.id);
+        if(n && n.status==="ok"){ const later = advEffect(plan, s).filter(e=>!e.goed);
+          opties.push(`<b>Prioriteit 1</b>: dan haalt ${esc(it.naam)} de datum${later.length?", maar "+later.map(e=>esc(e.t)).join("; "):""}.`);
+          if(A("pl.doelen")) acties.push(advActie("Prioriteit 1", "pl.doelen", () => bewaarDoc(itemColl(it), it.src, {prio:1}))); } }
+      // 3) realistische datum
+      if(it.klaarDatum){ const nieuweDatum = periodeEindIso(it.klaarDatum);
+        opties.push(`<b>Datum naar ${maandJaar(it.klaarDatum)}</b>: zo ver komt het plan nu.`);
+        if(A("pl.doelen")) acties.push(advActie(`Datum op ${dkort(parseIso(nieuweDatum))} ${parseIso(nieuweDatum).getFullYear()}`, "pl.doelen", () => bewaarDoc(itemColl(it), it.src, {[datumVeld(it)]: nieuweDatum}))); }
+      const dagenTot = daysBetween(TODAY, it.deadline);
+      voeg({score: 700 + (nodig-krijgt)*2 + Math.max(0, 365-dagenTot)/2, lvl:"bad", titel:`${it.naam} haalt ${dlang(it.deadline)} niet`,
+        waarom:`Nodig is ${eur0(nodig)} per maand; het plan heeft er gemiddeld ${eur0(krijgt)} voor. ${it.klaarDatum ? "Nu rond in "+maandJaar(it.klaarDatum)+"." : "Binnen drie jaar komt het niet rond."}`,
+        opties, acties});
+    });
+    // doelen zonder ruimte
+    plan.items.filter(i=>i.status==="nooit").forEach(it => {
+      const rest0 = Math.max(0, it.totaal - num(it.kind==="doel" ? it.src.gespaard : it.src.betaald));
+      const mb = rond10(rest0/24), s = advSim(B, {item:{id:it.id, kind:it.kind, velden:{maandbedrag:mb}}});
+      const n = s.items.find(y=>y.id===it.id), later = advEffect(plan, s).filter(e=>!e.goed);
+      const acties = A("pl.doelen") ? [advActie(`${eur0(mb)} per maand`, "pl.doelen", () => bewaarDoc(itemColl(it), it.src, {maandbedrag:mb}))] : [];
+      voeg({score:300 + rest0/100, lvl:"warn", titel:`${it.naam} komt niet rond binnen drie jaar`,
+        waarom:`Na de andere doelen blijft er niets voor over (nog ${eur0(rest0)} nodig).`,
+        doen:`Geef het een vast bedrag van ${eur0(mb)} per maand${n && n.klaarDatum ? `: dan rond in ${maandJaar(n.klaarDatum)}` : ""}.`,
+        effect: later.slice(0,3), acties});
+    });
+    // buffer
+    if(spaar < buf){
+      const bufDoel = plan.items.find(i=>i.kind==="doel" && /buffer|nood/i.test(i.naam));
+      if(bufDoel){
+        voeg({score:120, lvl:"warn", titel:`Buffer ${eur0(spaar)} van ${eur0(buf)}`,
+          waarom:`Een onverwachte rekening kan nu nog niet uit eigen geld.`,
+          doen: bufDoel.klaarDatum ? `${bufDoel.naam} is volgens plan rond in ${maandJaar(bufDoel.klaarDatum)}. Houd dat doel aan en geef het voorrang als er iets overblijft.` : `${bufDoel.naam} komt met het huidige plan niet rond: geef het een vast maandbedrag.`});
+      } else {
+        const mb = rond10((buf-spaar)/12), nieuw = {id:"__buffer", naam:"Buffer", bedrag:buf-spaar, gespaard:0, maandbedrag:mb, soort:"noodzakelijk", prio:2};
+        const s = advSim(B, {nieuwDoel:nieuw}), nb = s.items.find(y=>y.id==="__buffer");
+        const acties = A("pl.doelen") ? [advActie(`Doel Buffer (${eur0(mb)}/maand)`, "pl.doelen", () => { const id = uid(); return db.doc("doelen/"+id).set(Object.assign({}, nieuw, {id, bijgewerkt:new Date().toISOString()})); })] : [];
+        voeg({score:150, lvl:"warn", titel:`Buffer ${eur0(spaar)} van ${eur0(buf)}`,
+          waarom:`Een onverwachte rekening kan nu nog niet uit eigen geld.`,
+          doen:`Maak een spaardoel Buffer van ${eur0(buf-spaar)} met ${eur0(mb)} per maand${nb && nb.klaarDatum ? `; rond in ${maandJaar(nb.klaarDatum)}` : ""}.`,
+          effect: advEffect(plan, s).filter(e=>!e.goed).slice(0,2), acties});
+      }
+    }
+    // afbetalingen die binnen een half jaar stoppen
+    const stopt = S.posten.filter(p=>p.einddatum).map(p=>({p, e:parseIso(p.einddatum)})).filter(x=>x.e && daysBetween(TODAY,x.e)>=0 && daysBetween(TODAY,x.e)<=183).sort((a,b)=>a.e-b.e);
+    if(stopt.length){ const som = stopt.reduce((s,x)=>s+num(x.p.bedrag),0);
+      voeg({score:20, lvl:"good", titel:`Vanaf ${maandJaar(addDays(stopt[stopt.length-1].e,1))} ${eur0(som)} per maand meer ruimte`,
+        waarom:`Dan stoppen ${stopt.map(x=>`${x.p.naam} (${dkort(x.e)})`).join(", ")}.`,
+        doen: naam1 ? `Het plan rekent hier al mee: dat geld gaat vanzelf naar ${naam1} en de andere doelen. Laat het daar ook echt heen gaan.` : `Het plan rekent hier al mee; laat het geld naar de doelen gaan in plaats van naar losse uitgaven.`});
+    }
+  }
+
+  // ---- afschrift: waar het geld heen ging ----
+  const af = scope==="afschrift" ? selectedAfschrift() : B.sp.af;
+  if(af){
+    const an = analyseAfschrift(af), dagen = Math.max(1, daysBetween(an.van, an.tot)+1), pm = v => v*(365/12)/dagen;
+    const prevAf = S.afschriften.filter(a=>a.id!==af.id && a.tot && a.tot < af.van).sort((a,b)=>a.tot<b.tot?1:-1)[0];
+    const prev = prevAf ? analyseAfschrift(prevAf) : null, pdagen = prev ? Math.max(1, daysBetween(prev.van, prev.tot)+1) : 1;
+    const perCat = {}; an.varRows.forEach(r=>{ const c = classify(r).cat; if(c==="Nog in te delen") return; perCat[c] = (perCat[c]||0) - r[2]; });
+    const prevCat = {}; if(prev) prev.varRows.forEach(r=>{ const c = classify(r).cat; prevCat[c] = (prevCat[c]||0) - r[2]; });
+    const cats = Object.entries(perCat).map(([c,v])=>({c, pm:pm(v), was: prev ? (prevCat[c]||0)*(365/12)/pdagen : null})).sort((a,b)=>(b.pm-(b.was||0))-(a.pm-(a.was||0)));
+    const ontw = cats.find(x=>x.was!=null && x.pm - x.was >= 40);
+    if(ontw){ const d = ontw.pm - ontw.was, s = advSim(B, {vrijMinder:d});
+      voeg({score:200 + d/5, lvl:"warn", titel:`${ontw.c}: ${eur0(d)} per maand meer dan vorige maand`,
+        waarom:`Omgerekend naar een hele maand ${eur0(ontw.pm)}, tegen ${eur0(ontw.was)} de maand ervoor.`,
+        doen:`Terug naar het niveau van vorige maand scheelt ${eur0(d)} per maand.`, effect: advEffect(plan, s).filter(e=>e.goed).slice(0,2), goaf:"soort"});
+    } else if(!prev){
+      const LOS = ["Horeca & bezorging","Uitjes & vrije tijd","Winkels & online","Elektronica","Kleding & verzorging","Gaming","Cadeaus","Huis & tuin","Contant"];
+      const som = {}; an.varRows.forEach(r=>{ const c = classify(r).cat; if(LOS.includes(c)) som[c] = (som[c]||0) - r[2]; });
+      const groot = Object.entries(som).sort((a,b)=>b[1]-a[1])[0];
+      if(groot && groot[1] > vrijCfg*0.25){ const helft = groot[1]/2, s = advSim(B, {vrijMinder:helft});
+        voeg({score:100 + groot[1]/5, lvl:"info", titel:`${groot[0]}: ${eur0(groot[1])} in ${dagen} dagen`,
+          waarom:`Dat is ${Math.round(groot[1]/Math.max(1,vrijCfg)*100)}% van het vrije budget voor een hele maand (${eur0(vrijCfg)}).`,
+          doen:`Geven jullie hier voortaan de helft aan uit, dan houden jullie ongeveer ${eur0(helft)} per maand over voor het plan.`, effect: advEffect(plan, s).filter(e=>e.goed).slice(0,2), goaf:"soort"}); }
+    }
+    // terugkerende kleine uitgaven bij dezelfde partij
+    const partij = new Map(); an.varRows.forEach(r=>{ const k = normKey(String(r[1]||"").split(/\s+/).slice(0,2).join(" ")) || "onbekend"; const e = partij.get(k) || {naam:String(r[1]||"Onbekend").split(/\s+/).slice(0,3).join(" "), n:0, som:0}; e.n++; e.som -= r[2]; partij.set(k, e); });
+    const vaak = [...partij.values()].filter(e=>e.n>=3 && e.som>=30).sort((a,b)=>b.som-a.som);
+    if(vaak.length){ const t = vaak[0];
+      voeg({score:80 + pm(t.som)/5, lvl:"info", titel:`${t.n}× ${t.naam}: ${eur0(t.som)} in ${dagen} dagen`,
+        waarom:`Gemiddeld ${eur(t.som/t.n)} per keer${vaak.length>1 ? `; ook vaak: ${vaak.slice(1,3).map(x=>`${x.naam} (${x.n}×)`).join(", ")}` : ""}.`,
+        doen:`Is dit vast terugkerend? Zet het dan als vaste last, zodat het plan ermee rekent. Anders: hier zit makkelijk te besparen.`, goaf:"soort"}); }
+    // vaste lasten die hoger uitkomen
+    an.posten.forEach(e => { if(e.it.freq==="week") return; const per = e.som/Math.max(1,e.n), ing = num(e.it.bedrag); if(per - ing < 1) return;
+      const acties = (A("vl.uitgaven") || A("af.vaste")) ? [advActie(`Vaste last op ${eur(per)}`, "vl.uitgaven", () => db.doc("posten/"+e.it.id).update({bedrag: Math.round(per*100)/100}))] : [];
+      voeg({score:150 + (per-ing)*2, lvl:"warn", titel:`${e.it.naam} kost ${eur(per)} in plaats van ${eur(ing)}`,
+        waarom:`Op het afschrift ${e.n}× afgeschreven. Het plan rekent nog met het oude bedrag: ${eur0(per-ing)} per maand te weinig.`,
+        doen:`Is het blijvend? Zet de vaste last op het nieuwe bedrag.`, acties}); });
+    if(an.inbox.length){ const som = an.inbox.reduce((s,r)=>s-r[2],0);
+      voeg({score:60 + som/20, lvl:"info", titel:`${an.inbox.length} afschrijving${an.inbox.length>1?"en":""} nog niet ingedeeld (${eur0(som)})`,
+        waarom:`Zolang die er staan, kloppen de cijfers per soort niet helemaal.`, doen:`Deel ze in; de app onthoudt het voor de volgende keer.`, goaf:"indelen"}); }
+    if(an.gemist.length) voeg({score:30, lvl:"info", titel:`${an.gemist.length} vaste last${an.gemist.length>1?"en":""} niet gevonden`,
+        waarom:`${an.gemist.slice(0,3).map(g=>g.it.naam).join(", ")}${an.gemist.length>3?" en meer":""} staan niet op dit afschrift.`,
+        doen:`Lopen ze nog? Voeg een zoekwoord toe, of zet een einddatum als ze gestopt zijn.`, goaf:"vaste"});
+  }
+  return L.sort((a,b)=>b.score-a.score);
+}
+
+function advItemHtml(a){
+  const eff = (a.effect||[]).length ? `<div class="eff">${a.effect.map(e=>`<span class="${e.goed?"pos":"neg"}">${e.goed?"↑":"↓"} ${esc(e.t)}</span>`).join("")}</div>` : "";
+  const opties = (a.opties||[]).length ? `<ul class="opt">${a.opties.map(o=>`<li>${o}</li>`).join("")}</ul>` : "";
+  const knoppen = (a.acties||[]).concat(a.goaf ? [`<button type="button" class="btn sm ghost" data-goaf="${a.goaf}">Bekijk ›</button>`] : []);
+  return `<div class="adv">${v3status(a.lvl)}<div class="grow"><b>${esc(a.titel)}</b><small>${esc(a.waarom||"")}</small>${a.doen?`<p class="doe">${esc(a.doen)}</p>`:""}${opties}${eff}${knoppen.length?`<div class="btnrow">${knoppen.join("")}</div>`:""}</div></div>`;
+}
+function advLijst(lijst, key, toon){
+  if(!lijst.length) return `<div class="empty">Geen adviezen: alles loopt volgens plan.</div>`;
+  const shown = hasMore(key) ? lijst : lijst.slice(0, toon);
+  return `<div class="advl">${shown.map(advItemHtml).join("")}</div>${moreBtn(key, lijst.length, toon)}`;
+}
+// Overzicht: de drie adviezen die het meeste opleveren of het dringendst zijn
+function slimsteKaart(){
+  ADV.acties.clear();
+  const B = advBasis(), lijst = adviezen(B, "alles").filter(a=>a.score>=50 && !a.td);   // tekort, rekening in gevaar en vrij budget staan al in Te doen
+  return `<section class="card c3" data-perm="ov.advies"><div class="h3row"><h2>Slimste stap nu</h2>${lijst.length?`<span class="cnt">${lijst.length}</span>`:""}</div>
+    ${advLijst(lijst, "adv:ov", 3)}</section>`;
+}
+// Plan & doelen: alle adviezen
+function adviesKaart(){
+  ADV.acties.clear();
+  const B = advBasis(), lijst = adviezen(B, "alles");
+  return `<section class="card c3" data-perm="pl.advies"><div class="h3row"><h2>Advies</h2><span class="sub3">uit jullie cijfers</span></div>
+    ${advLijst(lijst, "adv:pl", 6)}
+    <p class="hint">Berekend met vaste regels, geen AI. Waar iets verandert, is het doorgerekend met het plan.</p></section>`;
+}
+// Afschrift: analyse van het gekozen afschrift
+function analyseKaart(){
+  ADV.acties.clear();
+  const af = selectedAfschrift(); if(!af) return "";
+  const B = advBasis(), an = analyseAfschrift(af), gw = geplandVsWerkelijk(an);
+  const lijst = adviezen(B, "afschrift");
+  const boven = gw.list.filter(x=>x.diff>10).sort((a,b)=>b.diff-a.diff).slice(0,3);
+  const kop = `<p class="doe" style="margin:0">${dkort(an.van)} – ${dkort(an.tot)}: ${eur0(an.uitTot)} af, ${eur0(an.inTot)} bij${boven.length ? `. Meeste boven plan: ${boven.map(x=>`${esc(x.c==="Vrij besteedbaar"?"Losse uitgaven":x.c)} +${eur0(x.diff)}`).join(", ")}` : ". Alle soorten met een plan blijven binnen het plan"}.</p>`;
+  return `<section class="card c3" data-perm="af.analyse"><div class="h3row"><h2>Analyse</h2><span class="sub3">dit afschrift</span></div>
+    ${kop}${advLijst(lijst, "adv:af", 5)}</section>`;
+}
+document.addEventListener("click", async e => {
+  const b = e.target.closest && e.target.closest("[data-advact]"); if(!b) return;
+  const a = ADV.acties.get(b.dataset.advact); if(!a) return;
+  if(!A(a.perm) && !(a.perm==="vl.uitgaven" && A("af.vaste"))){ toast("Dit mag je niet aanpassen."); return; }
+  b.disabled = true;
+  try{ await a.run(); toast("Aangepast"); }
+  catch(err){ b.disabled = false; toast(err.code==="not_granted" ? "Je hebt hier geen rechten voor." : "Aanpassen lukte niet."); }
+});
+
 
 function uploadBox(){
   return `<div class="drop" id="drop">
@@ -1609,7 +1859,7 @@ function renderAfschrift(){
   </section>` : ""}
   ${segs.length>1 ? `<div class="segbar" id="segA"><div class="seg big" role="group" aria-label="Onderdeel">${segZ.indelen?segBtn("indelen","In te delen",an.inbox.length):""}${segZ.soort?segBtn("soort","Per soort"):""}${segZ.vaste?segBtn("vaste","Vaste lasten",herkend.length):""}</div></div>` : ""}
   ${body}
-  ${Z("af.analyse") ? adviceCard("afschrift","Analyse","Vergelijkt dit afschrift met jullie budget: waar het geld heen ging, wat opvalt en wat jullie kunnen doen. Berekend met vaste regels uit jullie cijfers.") : ""}
+  ${Z("af.analyse") ? analyseKaart() : ""}
   ${A("af.verwijderen") ? `<div class="btnrow"><button class="btn danger sm" data-delaf="${esc(sel.id)}">Dit afschrift verwijderen</button></div>` : ""}`;
 }
 
@@ -1767,75 +2017,7 @@ function mdLite(t){
   }
   if(inList) html+="</ul>"; return html;
 }
-// Advies en analyse worden berekend met vaste regels (geen AI): dezelfde onderwerpen als het oude advies van Claude.
-function adviesTekst(key){
-  const p0 = periodN(0), cur = periodCalc(p0);
-  // zelfde plan als op Overzicht: met wat er deze maand meer is uitgegeven dan vrij was
-  const plan0 = buildPlan(0), vrij = vrijNu(plan0, cur), sp = spending(p0), over = sp.totaal - vrij;
-  const plan = over>0.5 ? buildPlan(over) : plan0;
-  const m0 = plan.months[0], m1 = plan.months[1];
-  const maand = d => MAANDEN_L[d.getMonth()]+" "+d.getFullYear();
-  const L = [];
-  if(key==="afschrift"){
-    const list = S.afschriften.slice().sort((a,b)=>a.tot<b.tot?1:-1);
-    const sel = list.find(a=>a.id===S.afschriftSel) || list[0];
-    if(!sel) return "Er is nog geen afschrift om te analyseren.";
-    const an = analyseAfschrift(sel), gw = geplandVsWerkelijk(an);
-    const dagen = Math.max(1, gw.dagen), perMaand = v => v*(365/12)/dagen;
-    L.push(`Afschrift **${dkort(an.van)} – ${dkort(an.tot)}** (${dagen} dagen): ${eur0(an.uitTot)} afgeschreven, ${eur0(an.inTot)} bijgeschreven.`);
-    const boven = gw.list.filter(x=>x.diff>10).sort((a,b)=>b.diff-a.diff);
-    if(boven.length) boven.slice(0,3).forEach(x=>L.push(`- **${x.c}:** ${eur0(x.werkelijk)} tegen ${eur0(x.gepland)} gepland (${eur0(x.diff)} meer).`));
-    else L.push(`- Alle soorten met een plan blijven binnen het plan.`);
-    const onder = gw.list.filter(x=>x.diff<-25 && x.c!=="Vrij besteedbaar").sort((a,b)=>a.diff-b.diff)[0];
-    if(onder) L.push(`- **${onder.c}** bleef ${eur0(-onder.diff)} onder het plan.`);
-    const per = new Map(); an.varRows.forEach(r=>{ const k=normKey(r[1]||"Onbekend")||"onbekend"; const e=per.get(k)||{naam:r[1]||"Onbekend", som:0, n:0}; e.som+=-r[2]; e.n++; per.set(k,e); });
-    const top = [...per.values()].sort((a,b)=>b.som-a.som).slice(0,3);
-    if(top.length) L.push(`- **Grootste losse uitgaven:** ${top.map(t=>`${t.naam} ${eur0(t.som)}${t.n>1?` (${t.n}×)`:""}`).join(", ")}.`);
-    if(an.boodschappenBudget && an.boodschappen > an.boodschappenBudget*1.1) L.push(`- **Boodschappen:** ${eur0(an.boodschappen)} tegen ${eur0(an.boodschappenBudget)} budget.`);
-    if(an.inbox.length) L.push(`- **${an.inbox.length} afschrijving${an.inbox.length>1?"en":""} nog in te delen** (samen ${eur0(an.inbox.reduce((s,r)=>s-r[2],0))}). Zolang die er staan, kloppen de cijfers per soort niet helemaal.`);
-    if(an.gemist.length) L.push(`- **Niet gevonden:** ${an.gemist.slice(0,4).map(g=>g.it.naam).join(", ")}${an.gemist.length>4?" en meer":""}. Controleer of ze nog lopen of voeg een zoekwoord toe.`);
-    const doen = [];
-    const vb = gw.list.find(x=>x.c==="Vrij besteedbaar");
-    if(vb && vb.diff>10) doen.push(`Spreek tot loondag een weekbedrag af voor losse uitgaven: ${eur0(num(S.config.vrijBudget)*12/52)} per week past in het vrije budget van ${eur0(num(S.config.vrijBudget))}.`);
-    const LOS = ["Horeca & bezorging","Uitjes & vrije tijd","Winkels & online","Elektronica","Kleding & verzorging","Gaming","Cadeaus","Huis & tuin"];
-    const grootste = Object.entries(an.cats).filter(([c])=>LOS.includes(c)).sort((a,b)=>b[1]-a[1])[0];
-    if(grootste && grootste[1]>50) doen.push(`Halveer ${grootste[0].toLowerCase()}: dat scheelt ongeveer ${eur0(perMaand(grootste[1])/2)} per maand.`);
-    const vastBoven = boven.find(x=>x.c!=="Vrij besteedbaar" && x.c!=="Boodschappen");
-    if(vastBoven) doen.push(`Kijk bij Afschrift → Vaste lasten waarom ${vastBoven.c.toLowerCase()} hoger uitkomt; is het blijvend, zet de vaste last dan op het nieuwe bedrag.`);
-    if(an.inbox.length) doen.push(`Deel de ${an.inbox.length} afschrijving${an.inbox.length>1?"en":""} in bij Afschrift → In te delen.`);
-    if(doen.length) L.push("", "**Wat nu:**", ...doen.slice(0,3).map(t=>"- "+t));
-    return L.join("\n");
-  }
-  // plan
-  const spaar = num(S.config.spaarsaldo), buf = num(S.config.buffer||1000);
-  if(m0.tekortUit>0.5) L.push(`- **Tekort deze maand: ${eur0(m0.tekortUit)}.** Vul dit aan uit het spaargeld (nu ${eur0(spaar)}), anders gaat het volgende maand eerst van het geld voor terugbetalingen en doelen af.`);
-  const dagenOver = Math.max(1, daysBetween(TODAY, p0.end)+1);
-  if(over>1) L.push(`- **Vrij budget:** er is ${eur0(over)} meer uitgegeven dan de ${eur0(vrij)} die vrij was. Dat gaat af van het geld voor terugbetalingen en doelen.`);
-  else L.push(`- **Vrij budget:** nog ${eur0(vrij-sp.totaal)} tot loondag, ongeveer ${eur0((vrij-sp.totaal)/dagenOver)} per dag.`);
-  const nu = plan.items.filter(i=>i.dezeMaand>0.5);
-  L.push(nu.length ? `- **Deze maand eerst:** ${nu.map(i=>`${i.naam} ${eur0(i.dezeMaand)}`).join(", ")}.` : `- Deze maand gaat er niets naar terugbetalingen of doelen${m0.basis<=0.5?", omdat er geen ruimte is":""}.`);
-  plan.items.filter(i=>i.status==="laat" && i.deadline).forEach(i => {
-    const rest0 = Math.max(0, i.totaal - num(i.kind==="doel" ? i.src.gespaard : i.src.betaald));
-    let left = 0; for(let k=0;k<plan.months.length;k++){ left++; if(plan.months[k].p.end >= i.deadline) break; }
-    const nodig = i.deadline < p0.start ? rest0 : rest0/Math.max(1,left);
-    L.push(`- **${i.naam} haalt ${dlang(i.deadline)} niet.** Daarvoor is ongeveer ${eur0(nodig)} per maand nodig. ${i.klaarDatum ? `Met het huidige plan is het rond in ${maand(i.klaarDatum)}: zet de datum daarop, verlaag het bedrag of geef het een hogere prioriteit.` : "Binnen drie jaar komt er met het huidige plan geen geld voor vrij."}`);
-  });
-  plan.items.filter(i=>i.status==="nooit").forEach(i => L.push(`- **${i.naam}** komt binnen drie jaar niet rond: na de andere doelen blijft er niets over. Geef het een vast maandbedrag of een hogere prioriteit.`));
-  if(m1) L.push(`- **Volgende maand** is er ${eur0(m1.basis)} voor terugbetalingen en doelen${m1.reserve>0.5?`, waarvan ${eur0(m1.reserve)} gereserveerd voor geplande uitgaven`:""}${m1.over>0.5?`; daarna blijft ${eur0(m1.over)} over`:""}.`);
-  if(spaar < buf){
-    const tekort = buf - spaar, mnd = m1 && m1.over>10 ? Math.ceil(tekort/m1.over) : null;
-    L.push(`- **Buffer:** ${eur0(spaar)} van ${eur0(buf)}. ${mnd ? `Zet wat er volgende maand overblijft (${eur0(m1.over)}) apart; dan is de buffer in ongeveer ${mnd} maand${mnd>1?"en":""} op peil.` : `Er blijft na het plan niets over. Overweeg een spaardoel "Buffer" met een vast maandbedrag, bijvoorbeeld ${eur0(Math.ceil(tekort/12/10)*10)} per maand (rond in een jaar).`}`);
-  } else L.push(`- **Buffer** is op peil (${eur0(spaar)}).`);
-  const eerste = plan.items.find(i=>i.status==="laat") || plan.items.find(i=>i.status==="nooit");
-  const stopt = S.posten.filter(p=>p.einddatum).map(p=>({p, e:parseIso(p.einddatum)})).filter(x=>x.e && daysBetween(TODAY,x.e)>=0 && daysBetween(TODAY,x.e)<=183).sort((a,b)=>a.e-b.e);
-  if(stopt.length){ const som = stopt.reduce((s,x)=>s+num(x.p.bedrag),0);
-    L.push(`- **Binnen een half jaar stoppen:** ${stopt.map(x=>`${x.p.naam} (${dkort(x.e)}, ${eur0(num(x.p.bedrag))})`).join(", ")}. Samen komt daarna ${eur0(som)} per maand vrij${eerste ? `; laat dat direct doorlopen naar ${eerste.naam}` : spaar<buf ? "; laat dat direct doorlopen naar de buffer" : ""}.`); }
-  return L.join("\n");
-}
-function askAdvice(key){
-  S.advies[key] = {html: mdLite(adviesTekst(key)), tijd: new Date()};
-  render();
-}
+function askAdvice(){}
 
 // ---------- upload ----------
 function decodeBytes(bytes){
@@ -2547,7 +2729,7 @@ function startData(){
 // Deze web-app vervangt de koppelingen van de artifact: de opslag is Firestore (live bij beide), wie kijkt wordt herkend
 // aan het Google-account (Barry en Ilona, vergeleken op een vingerafdruk van het e-mailadres zodat de adressen niet in de
 // openbare code staan) en het Drive-kiesvenster praat rechtstreeks met de Google Drive API met de toegang van wie kijkt.
-const APP_VERSIE = "2026-10-13.2";
+const APP_VERSIE = "2026-10-14.1";
 const FB_CONFIG = {"apiKey": "AIzaSyDcsTDpRz6SE43gDWE9MvSQMKq7BdCNysY", "authDomain": "maandbudget-70d4b.firebaseapp.com", "projectId": "maandbudget-70d4b", "storageBucket": "maandbudget-70d4b.firebasestorage.app", "messagingSenderId": "3900760101", "appId": "1:3900760101:web:5dd1e90e1602b8813f1fcc"};
 const H_BARRY = "aaf5a8cde7f61d40135a75250297fa6b07330cb45a1595c9f42533a78dcefcd1";
 const H_ILONA = "0627728dbc7c040caa94d870f3e136ff6f69f95323d473cece8882f05a93513f";
