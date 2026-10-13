@@ -486,6 +486,17 @@ button.td:focus-visible{outline:2px solid var(--accent);outline-offset:2px;borde
 .adv .eff{display:flex;flex-direction:column;gap:2px;margin-top:6px;font-size:13px;font-weight:600}
 .adv .eff .pos{color:var(--good)} .adv .eff .neg{color:var(--bad)}
 .adv .btnrow{margin-top:8px}
+/* geen tekst selecteren (geen zoekbalk van Chrome), behalve in invulvelden */
+body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
+input,textarea,select,[contenteditable="true"]{-webkit-user-select:text;user-select:text;-webkit-touch-callout:default}
+/* verwacht maar niet afgeschreven */
+.ghostlist{margin-top:4px}
+.drow.ghost{border:1px dashed var(--line);border-radius:8px;padding:6px 8px;margin:2px 0;color:var(--muted)}
+.drow.ghost b{color:var(--muted);font-weight:600}
+.drow.ghost.weg span:first-child{text-decoration:line-through;text-decoration-color:var(--muted)}
+.tag.ghosttag{background:var(--surface-2);color:var(--muted)}
+.det.flash,.acc.flash{animation:flash 1.6s ease}
+@keyframes flash{0%,40%{background:var(--accent-soft)}100%{background:transparent}}
 </style>
 
 <header class="top"><div class="row">
@@ -692,7 +703,7 @@ function occurrences(item, start, end){
       m++; if(m>11){m=0;y++;}
     }
   }
-  return out.filter(d => (!eind || d<=eind) && (!begin || d>=begin));
+  return out.filter(d => (!eind || d<=eind) && (!begin || d>=begin) && !(item.id && VERV.has(item.id+"_"+iso(d))));
 }
 function periodCalc(p){
   const ink=[], uit=[];
@@ -956,6 +967,7 @@ function classify(row){
   for(const r of S.regels){ const k=String(r.zoekwoord||"").toLowerCase().trim(); if(hit(k)){
     if(r.categorie==="Negeren") return {type:"negeer", cat:"Eigen overboekingen"};
     return {type: r.categorie==="Boodschappen"?"boodschappen":"var", cat:r.categorie, regel:r}; } }
+  if(b<0){ const lr = leerVoorspel(row); if(lr) return {type: lr.cat==="Boodschappen"?"boodschappen":"var", cat:lr.cat, geleerd:lr}; }
   for(const [cat, kws] of AUTO_CATS){ if(kws.some(k=>txt.includes(k))) return {type: cat==="Boodschappen"?"boodschappen":"var", cat, auto:true}; }
   return {type:"var", cat:"Nog in te delen", inbox:true};
 }
@@ -983,7 +995,7 @@ function analyseAfschrift(a){
     S.posten.forEach(it => {
       if(it.categorie==="Boodschappen" || !keywordsOf(it).length) return;
       const occ = occurrences(it, res.van, res.tot);
-      if(occ.length && !res.posten.has(it.id)) res.gemist.push({it, d:occ[0]});
+      if(occ.length && !res.posten.has(it.id) && !occ.every(d=>{ const v=verwOf(it.id,d); return v && (v.status==="anders"||v.status==="gestopt"); })) res.gemist.push({it, d:occ[0]});
     });
     const weken = Math.max(1, (daysBetween(res.van,res.tot)+1)/7);
     const wk = S.posten.filter(p=>p.categorie==="Boodschappen").reduce((s,p)=>s+num(p.bedrag)*(p.freq==="week"?1:12/52),0);
@@ -1140,7 +1152,7 @@ function detRowBtn(x){
   const naamIt = x.k && x.k.it ? x.k.it.naam : "";
   const tag = x.flag==="hoger" ? `<span class="tag bad">+${eur(x.extra)} t.o.v. ${eur(x.exp)}</span>`
     : x.flag==="onverwacht" ? `<span class="tag warn">niet verwacht</span>` : "";
-  const sub = naamIt && naamIt!==r[1] ? esc(naamIt) : esc(String(x.meta).slice(0,40));
+  const sub = x.k && x.k.geleerd ? esc((x.k.geleerd.label ? x.k.geleerd.label+" · " : "")+"geleerd") : naamIt && naamIt!==r[1] ? esc(naamIt) : esc(String(x.meta).slice(0,40));
   return `<button type="button" class="drow${x.flag?" fl "+x.flag:""}" data-herindeel="${esc(sig)}"><span>${dkort(parseIso(r[0]))} · ${esc(r[1]||"Onbekend")}${sub?` <span class="muted">${sub}</span>`:""}${tag?" "+tag:""}${note&&note.tekst?`<span class="note">✎ ${esc(note.tekst)}</span>`:""}</span><b>${eur(-r[2])}</b></button>`;
 }
 function detailHtml(sp){
@@ -1415,8 +1427,8 @@ function renderOverzicht(plan, cur){
   </section>`;
 
   return `${Z("ov.besteedbaar") ? hero : ""}
-  ${Z("ov.advies") ? slimsteKaart() : ""}
   ${Z("ov.uitgaven") ? flow : ""}
+  ${Z("ov.advies") ? slimsteKaart() : ""}
   ${Z("ov.letop") ? todoCard : ""}
   ${Z("ov.vrij") ? ladder : ""}
   ${Z("ov.komt") ? billsCard : ""}
@@ -1685,7 +1697,7 @@ function adviezen(B, scope){
     if(ontw){ const d = ontw.pm - ontw.was, s = advSim(B, {vrijMinder:d});
       voeg({score:200 + d/5, lvl:"warn", titel:`${ontw.c}: ${eur0(d)} per maand meer dan vorige maand`,
         waarom:`Omgerekend naar een hele maand ${eur0(ontw.pm)}, tegen ${eur0(ontw.was)} de maand ervoor.`,
-        doen:`Terug naar het niveau van vorige maand scheelt ${eur0(d)} per maand.`, effect: advEffect(plan, s).filter(e=>e.goed).slice(0,2), goaf:"soort"});
+        doen:`Terug naar het niveau van vorige maand scheelt ${eur0(d)} per maand.`, effect: advEffect(plan, s).filter(e=>e.goed).slice(0,2), goaf:"soort", focus:"ps:"+ontw.c});
     } else if(!prev){
       const LOS = ["Horeca & bezorging","Uitjes & vrije tijd","Winkels & online","Elektronica","Kleding & verzorging","Gaming","Cadeaus","Huis & tuin","Contant"];
       const som = {}; an.varRows.forEach(r=>{ const c = classify(r).cat; if(LOS.includes(c)) som[c] = (som[c]||0) - r[2]; });
@@ -1693,27 +1705,27 @@ function adviezen(B, scope){
       if(groot && groot[1] > vrijCfg*0.25){ const helft = groot[1]/2, s = advSim(B, {vrijMinder:helft});
         voeg({score:100 + groot[1]/5, lvl:"info", titel:`${groot[0]}: ${eur0(groot[1])} in ${dagen} dagen`,
           waarom:`Dat is ${Math.round(groot[1]/Math.max(1,vrijCfg)*100)}% van het vrije budget voor een hele maand (${eur0(vrijCfg)}).`,
-          doen:`Geven jullie hier voortaan de helft aan uit, dan houden jullie ongeveer ${eur0(helft)} per maand over voor het plan.`, effect: advEffect(plan, s).filter(e=>e.goed).slice(0,2), goaf:"soort"}); }
+          doen:`Geven jullie hier voortaan de helft aan uit, dan houden jullie ongeveer ${eur0(helft)} per maand over voor het plan.`, effect: advEffect(plan, s).filter(e=>e.goed).slice(0,2), goaf:"soort", focus:"ps:"+groot[0]}); }
     }
     // terugkerende kleine uitgaven bij dezelfde partij
-    const partij = new Map(); an.varRows.forEach(r=>{ const k = normKey(String(r[1]||"").split(/\s+/).slice(0,2).join(" ")) || "onbekend"; const e = partij.get(k) || {naam:String(r[1]||"Onbekend").split(/\s+/).slice(0,3).join(" "), n:0, som:0}; e.n++; e.som -= r[2]; partij.set(k, e); });
+    const partij = new Map(); an.varRows.forEach(r=>{ const k = normKey(String(r[1]||"").split(/\s+/).slice(0,2).join(" ")) || "onbekend"; const e = partij.get(k) || {naam:String(r[1]||"Onbekend").split(/\s+/).slice(0,3).join(" "), n:0, som:0, cat:classify(r).cat}; e.n++; e.som -= r[2]; partij.set(k, e); });
     const vaak = [...partij.values()].filter(e=>e.n>=3 && e.som>=30).sort((a,b)=>b.som-a.som);
     if(vaak.length){ const t = vaak[0];
       voeg({score:80 + pm(t.som)/5, lvl:"info", titel:`${t.n}× ${t.naam}: ${eur0(t.som)} in ${dagen} dagen`,
         waarom:`Gemiddeld ${eur(t.som/t.n)} per keer${vaak.length>1 ? `; ook vaak: ${vaak.slice(1,3).map(x=>`${x.naam} (${x.n}×)`).join(", ")}` : ""}.`,
-        doen:`Is dit vast terugkerend? Zet het dan als vaste last, zodat het plan ermee rekent. Anders: hier zit makkelijk te besparen.`, goaf:"soort"}); }
+        doen:`Is dit vast terugkerend? Zet het dan als vaste last, zodat het plan ermee rekent. Anders: hier zit makkelijk te besparen.`, goaf:"soort", focus:"ps:"+t.cat}); }
     // vaste lasten die hoger uitkomen
     an.posten.forEach(e => { if(e.it.freq==="week") return; const per = e.som/Math.max(1,e.n), ing = num(e.it.bedrag); if(per - ing < 1) return;
       const acties = (A("vl.uitgaven") || A("af.vaste")) ? [advActie(`Vaste last op ${eur(per)}`, "vl.uitgaven", () => db.doc("posten/"+e.it.id).update({bedrag: Math.round(per*100)/100}))] : [];
       voeg({score:150 + (per-ing)*2, lvl:"warn", titel:`${e.it.naam} kost ${eur(per)} in plaats van ${eur(ing)}`,
         waarom:`Op het afschrift ${e.n}× afgeschreven. Het plan rekent nog met het oude bedrag: ${eur0(per-ing)} per maand te weinig.`,
-        doen:`Is het blijvend? Zet de vaste last op het nieuwe bedrag.`, acties}); });
+        doen:`Is het blijvend? Zet de vaste last op het nieuwe bedrag.`, acties, goaf:"vaste", focus:"vl:"+e.it.id}); });
     if(an.inbox.length){ const som = an.inbox.reduce((s,r)=>s-r[2],0);
       voeg({score:60 + som/20, lvl:"info", titel:`${an.inbox.length} afschrijving${an.inbox.length>1?"en":""} nog niet ingedeeld (${eur0(som)})`,
         waarom:`Zolang die er staan, kloppen de cijfers per soort niet helemaal.`, doen:`Deel ze in; de app onthoudt het voor de volgende keer.`, goaf:"indelen"}); }
     if(an.gemist.length) voeg({score:30, lvl:"info", titel:`${an.gemist.length} vaste last${an.gemist.length>1?"en":""} niet gevonden`,
         waarom:`${an.gemist.slice(0,3).map(g=>g.it.naam).join(", ")}${an.gemist.length>3?" en meer":""} staan niet op dit afschrift.`,
-        doen:`Lopen ze nog? Voeg een zoekwoord toe, of zet een einddatum als ze gestopt zijn.`, goaf:"vaste"});
+        doen:`Lopen ze nog? Tik op de vaste last om aan te geven of hij nog komt, wegvalt of gestopt is.`, goaf:"vaste", focus:"vl:__gemist"});
   }
   return L.sort((a,b)=>b.score-a.score);
 }
@@ -1721,7 +1733,7 @@ function adviezen(B, scope){
 function advItemHtml(a){
   const eff = (a.effect||[]).length ? `<div class="eff">${a.effect.map(e=>`<span class="${e.goed?"pos":"neg"}">${e.goed?"↑":"↓"} ${esc(e.t)}</span>`).join("")}</div>` : "";
   const opties = (a.opties||[]).length ? `<ul class="opt">${a.opties.map(o=>`<li>${o}</li>`).join("")}</ul>` : "";
-  const knoppen = (a.acties||[]).concat(a.goaf ? [`<button type="button" class="btn sm ghost" data-goaf="${a.goaf}">Bekijk ›</button>`] : []);
+  const knoppen = (a.acties||[]).concat(a.goaf ? [`<button type="button" class="btn sm ghost" data-goaf="${a.goaf}"${a.focus?` data-focus="${esc(a.focus)}"`:""}>Bekijk ›</button>`] : []);
   return `<div class="adv">${v3status(a.lvl)}<div class="grow"><b>${esc(a.titel)}</b><small>${esc(a.waarom||"")}</small>${a.doen?`<p class="doe">${esc(a.doen)}</p>`:""}${opties}${eff}${knoppen.length?`<div class="btnrow">${knoppen.join("")}</div>`:""}</div></div>`;
 }
 function advLijst(lijst, key, toon){
@@ -1790,7 +1802,7 @@ function soortLijst(sp){
     const fl = [x.nHoger? x.nHoger+" hoger":"", x.nOnv? x.nOnv+" niet verwacht":""].filter(Boolean).join(" · ");
     return `<details class="det cat" data-det="${esc(k)}" ${isOpen(k)?"open":""}><summary><div class="grow"><div class="name">${esc(x.c)}</div><div class="meta">${x.rows.length} post${x.rows.length===1?"":"en"}${x.ref!=null?" · "+x.refT+" "+eur0(x.ref):""}${fl?` · <span class="flagtxt">${fl}</span>`:""}</div></div><div style="text-align:right"><div class="amt">${eur0(x.som)}</div>${dtxt?`<div class="dlt ${cls}">${dtxt}</div>`:""}</div></summary>
       ${x.rows.length? `<div class="detrows">${x.rows.slice(0,30).map(r=> r.r ? detRowBtn(r) : `<button type="button" class="drow" data-edit="uitgaven:${esc(r.uid)}"><span>${dkort(parseIso(r.d))} · ${esc(r.naam)} <span class="muted">zelf ingevoerd</span></span><b>${eur(r.b)}</b></button>`).join("")}${x.rows.length>30?`<div class="small muted">en nog ${x.rows.length-30} meer</div>`:""}</div>` : `<div class="small muted detrows">Nog niets afgeschreven in deze soort.</div>`}
-    </details>`; }).join("")}</div>${moreBtn("ps", dt.list.length, 8)}
+    ${verwachtHtml(sp.an, x.c)}</details>`; }).join("")}</div>${moreBtn("ps", dt.list.length, 8)}
     <p class="hint">Vaste lasten en boodschappen vergeleken met het plan, losse uitgaven met ${dt.prev? "het vorige afschrift (omgerekend naar evenveel dagen)" : "het vorige afschrift zodra dat er is"}. Rood is meer, groen is minder. Tik op een afschrijving voor een notitie, om het bedrag van de vaste last te corrigeren of om hem anders in te delen.</p>`;
 }
 
@@ -1835,7 +1847,7 @@ function renderAfschrift(){
       <div class="list">${groups.slice(0,40).map((g,i)=>`<button class="item" data-indelen="${i}"><div class="grow"><div class="name">${esc(g.naam)}</div><div class="meta">${g.rows.length>1? g.rows.length+"× · lijkt terugkerend" : dkort(parseIso(g.rows[0][0]))}</div></div><div class="amt">${eur(g.som)}</div></button>`).join("")}</div></section>`
     : `<div class="alert good"><span class="dot"></span><div><b>Alles is ingedeeld</b><span class="small">Elke afschrijving op dit afschrift is gekoppeld aan een vaste last of soort.</span></div></div>`;
   else if(seg==="vaste") body = `<section class="card tight" data-perm="af.vaste"><div class="sec-h"><h2>Vaste lasten op dit afschrift</h2><span class="small muted">${herkend.length} herkend</span></div>
-      ${an.gemist.length ? `<details class="al warn"><summary><span class="dot"></span><span class="t">${an.gemist.length} niet gevonden in deze periode</span><span class="chev">${ICO.down}</span></summary><p>${an.gemist.map(g=>esc(g.it.naam)+" ("+dkort(g.d)+")").join(", ")}. Mogelijk een andere omschrijving: pas de zoekwoorden aan bij Vaste lasten, of tik bij "Per soort" op de betaling en koppel hem.</p></details>`:""}
+      ${(()=>{ const L = nietAfgeschreven(an, null); return L.length ? `<details class="det" data-det="vl:__gemist" ${isOpen("vl:__gemist")?"open":""}><summary><div class="grow"><div class="name">${L.length} verwacht, nog niet afgeschreven</div><div class="meta">${eur0(L.reduce((s,x)=>s+num(x.it.bedrag),0))} · tik om te zien en te duiden</div></div><span class="chev">${ICO.down}</span></summary>${verwachtHtml(an, null)}</details>` : ""; })()}
       <div class="detlist">${herkend.sort((a,b)=>b.som-a.som).map(e=>{
         const verwacht = occurrences(e.it, an.van, an.tot).length, plan = num(e.it.bedrag);
         const diff = e.som - plan*Math.max(verwacht,1);
@@ -2017,6 +2029,113 @@ function mdLite(t){
   }
   if(inList) html+="</ul>"; return html;
 }
+// ---------- verwacht maar (nog) niet afgeschreven: tonen en duiden ----------
+// Per vaste last en vervaldag kan worden vastgelegd wat er aan de hand is (collectie `verwacht`, id = <postId>_<JJJJ-MM-DD>):
+// komt  = wordt later nog afgeschreven (blijft verwacht);
+// vervalt = valt deze keer weg (meevaller): telt in alle berekeningen niet mee voor die dag;
+// anders = is anders betaald (contant, andere rekening): telt wel mee, maar wordt niet als "niet gevonden" gemeld;
+// gestopt = de vaste last is gestopt: einddatum wordt de dag ervoor.
+var VERV = new Set();
+S.verwacht = new Map();
+const VERW_LABEL = {komt:"komt nog", vervalt:"valt weg", anders:"anders betaald", gestopt:"gestopt"};
+function verwId(id, d){ return id+"_"+iso(d); }
+function verwOf(id, d){ return S.verwacht.get(verwId(id, d)) || null; }
+function occRaw(it, s, e){ const keep = [...VERV]; VERV.clear(); try{ return occurrences(it, s, e); } finally { keep.forEach(k=>VERV.add(k)); } }
+// vaste lasten die in het afschrift verwacht werden maar (nog) niet zijn afgeschreven; cat = alleen deze categorie
+function nietAfgeschreven(an, cat){
+  if(!an || !an.van || !an.tot) return [];
+  const uit = [];
+  S.posten.forEach(it => {
+    if(it.categorie==="Boodschappen") return;
+    if(cat && (it.categorie||"Overig")!==cat) return;
+    const occ = occRaw(it, an.van, an.tot).sort((a,b)=>a-b);
+    const kregen = (an.posten.get(it.id)||{n:0}).n;
+    occ.slice(Math.min(kregen, occ.length)).forEach(d => uit.push({it, d, v: verwOf(it.id, d), zw: !keywordsOf(it).length}));
+  });
+  return uit.sort((a,b)=>a.d-b.d);
+}
+function verwachtHtml(an, cat){
+  const L = nietAfgeschreven(an, cat); if(!L.length) return "";
+  return `<div class="detrows ghostlist"><div class="small muted" style="font-weight:600">Verwacht, nog niet afgeschreven</div>${L.map(x=>{
+    const st = x.v ? VERW_LABEL[x.v.status]||x.v.status : x.zw ? "geen zoekwoord" : "nog niet afgeschreven";
+    return `<button type="button" class="drow ghost${x.v&&x.v.status==="vervalt"?" weg":""}" data-verw="${esc(x.it.id)}|${iso(x.d)}"><span>${dkort(x.d)} · ${esc(x.it.naam)} <span class="tag ghosttag">${esc(st)}</span>${x.v&&x.v.notitie?`<span class="note">✎ ${esc(x.v.notitie)}</span>`:""}</span><b>${eur(num(x.it.bedrag))}</b></button>`; }).join("")}
+    <p class="hint" style="margin:2px 0 0">Tik om aan te geven wat er aan de hand is: komt nog, valt deze keer weg, anders betaald of gestopt.</p></div>`;
+}
+function openVerwacht(id, isoD){
+  const it = S.posten.find(p=>p.id===id), d = parseIso(isoD); if(!it || !d) return;
+  const v = verwOf(id, d) || {}, mag = A("af.soort") || A("af.vaste");
+  const opt = (k, t, s) => `<label class="chk"><input type="radio" name="vw" value="${k}" ${v.status===k?"checked":""} ${mag?"":"disabled"}><span><b style="display:inline">${t}</b><br><span class="small muted">${s}</span></span></label>`;
+  openSheet(`<div class="sheet-h"><h2>${esc(it.naam)}</h2><button type="button" class="iconbtn" data-close aria-label="Sluiten">✕</button></div>
+    <p class="small muted" style="margin:0">Verwacht op ${dlang(d)} · ${eur(num(it.bedrag))}${keywordsOf(it).length ? "" : " · deze vaste last heeft geen zoekwoord, dus de app kan hem niet op het afschrift herkennen"}</p>
+    <fieldset style="border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:10px"><legend class="small muted" style="font-weight:600;margin-bottom:6px">Wat is er aan de hand?</legend>
+      ${opt("komt","Komt nog","Wordt later afgeschreven. Blijft meetellen.")}
+      ${opt("vervalt","Valt deze keer weg","Een meevaller: telt deze maand nergens meer mee.")}
+      ${opt("anders","Anders betaald","Contant of van een andere rekening. Telt mee, maar wordt niet meer als ontbrekend gemeld.")}
+      ${opt("gestopt","Gestopt",`De vaste last stopt: einddatum wordt ${dlang(addDays(d,-1))}.`)}
+    </fieldset>
+    <div class="field"><label for="vw-note">Toelichting</label><textarea id="vw-note" rows="2" maxlength="300" ${mag?"":"disabled"} placeholder="Bijv. incasso schuift naar volgende week">${esc(v.notitie||"")}</textarea></div>
+    ${mag ? `<div class="btnrow" style="justify-content:flex-end">${v.status?`<button type="button" class="btn" id="vw-wis" style="margin-right:auto">Wissen</button>`:""}<button type="button" class="btn primary" id="vw-ok">Opslaan</button></div>` : `<p class="ro-note">Alleen bekijken.</p>`}`, dlg => {
+    const ok = $("#vw-ok"); if(ok) ok.onclick = async () => {
+      const k = (document.querySelector('input[name="vw"]:checked')||{}).value, note = $("#vw-note").value.trim();
+      if(!k) return toast("Kies wat er aan de hand is.");
+      try{
+        await db.doc("verwacht/"+verwId(id, d)).set({id:verwId(id, d), postId:id, datum:isoD, status:k, notitie:note, naam:it.naam, bedrag:num(it.bedrag), bijgewerkt:new Date().toISOString()});
+        if(k==="gestopt") await db.doc("posten/"+id).update({einddatum: iso(addDays(d,-1)), bijgewerkt:new Date().toISOString()});
+        toast("Bewaard"); dlg.close();
+      }catch(e){ toast(e.code==="not_granted" ? "Je hebt hier geen rechten voor." : "Opslaan lukte niet."); }
+    };
+    const wis = $("#vw-wis"); if(wis) wis.onclick = async () => { try{ await db.doc("verwacht/"+verwId(id, d)).delete(); toast("Gewist"); dlg.close(); }catch(e){ toast("Wissen lukte niet."); } };
+  });
+}
+document.addEventListener("click", e => { const b = e.target.closest && e.target.closest("[data-verw]"); if(!b) return; const [id, d] = b.dataset.verw.split("|"); openVerwacht(id, d); });
+
+// ---------- de app leert van jullie indeling ----------
+// Elke keer dat jullie één afschrijving zelf als losse uitgave indelen ("Anders indelen" → alleen deze afschrijving),
+// onthoudt de app partij + bedrag + soort (+ de notitie als reden). Een nieuwe afschrijving bij dezelfde partij met een
+// bedrag binnen 30% van zo'n voorbeeld krijgt dezelfde soort. Bij meerdere voorbeelden wint de soort met de dichtstbijzijnde
+// bedragen. Dit gaat vóór de automatische herkenning op winkelnaam, maar ná zoekwoorden van vaste lasten en eigen regels.
+function partijKey(naam){ return normKey(naam).split(" ").filter(w=>w.length>1).slice(0,2).join(" "); }
+let LEER = {src:null, nsrc:null, m:new Map()};
+function leerModel(){
+  if(LEER.src===S.herind && LEER.nsrc===S.notities) return LEER.m;
+  const m = new Map();
+  for(const h of (S.herind ? S.herind.values() : [])){
+    if(h.soort!=="var" || !h.categorie || !(num(h.bedrag)>0)) continue;
+    const k = partijKey(h.naam); if(!k) continue;
+    const note = ((S.notities.get(h.sig||h.id)||{}).tekst||"").trim();
+    if(!m.has(k)) m.set(k, []);
+    m.get(k).push({b:num(h.bedrag), cat:h.categorie, label:note, naam:String(h.naam||"").split(/\s+/).slice(0,3).join(" "), datum:h.datum||""});
+  }
+  LEER = {src:S.herind, nsrc:S.notities, m};
+  return m;
+}
+function leerVoorspel(row){
+  const ex = leerModel().get(partijKey(row[1])); if(!ex || !ex.length) return null;
+  const b = -row[2]; if(!(b>0)) return null;
+  const dicht = ex.map(e=>({e, d:Math.abs(Math.log(b/e.b))})).filter(x=>x.d<=Math.log(1.3));
+  if(!dicht.length) return null;
+  const stem = new Map(); dicht.forEach(x=>stem.set(x.e.cat, (stem.get(x.e.cat)||0) + 1/(1+x.d*10)));
+  const cat = [...stem.entries()].sort((a,b)=>b[1]-a[1])[0][0];
+  const zelfde = dicht.filter(x=>x.e.cat===cat).sort((a,b)=>a.d-b.d);
+  const label = (zelfde.find(x=>x.e.label)||{e:{}}).e.label || "";
+  return {cat, label, n:zelfde.length, partij:zelfde[0].e.naam};
+}
+
+// ---------- "Bekijk" opent precies het onderdeel waar het om gaat ----------
+document.addEventListener("click", e => {
+  const b = e.target.closest && e.target.closest("[data-focus]"); if(!b) return;
+  const k = b.dataset.focus;
+  (S.detOpen || (S.detOpen = new Set())).add(k);
+  (S.more || (S.more = new Set())).add("ps");
+  S.focusDet = k;
+}, true);
+function focusNa(){
+  const k = S.focusDet; S.focusDet = null; if(!k) return;
+  const el = [...app.querySelectorAll("[data-det]")].find(x=>x.dataset.det===k); if(!el) return;
+  el.open = true; el.scrollIntoView({block:"center", behavior:"smooth"});
+  el.classList.add("flash"); setTimeout(()=>el.classList.remove("flash"), 1800);
+}
+
 function askAdvice(){}
 
 // ---------- upload ----------
@@ -2320,7 +2439,7 @@ function openHerindeel(sig){
   const fr = findRow(sig); if(!fr) return toast("Deze afschrijving vind ik niet meer.");
   const r = fr.r, c = classify(r), amt = Math.round(-r[2]*100)/100, key0 = keyFromRow(r) || "";
   const huidig = c.type==="negeer" ? "Genegeerd" : c.it ? "Vaste last: "+c.it.naam : c.cat;
-  const bron = c.ov ? "door jullie zo ingedeeld" : c.eigen ? "eigen rekening: "+eigenNoot(c.eigen) : c.it ? "herkend aan het zoekwoord van de vaste last" : c.regel ? "volgens een eerdere indeling" : c.auto ? "automatisch herkend aan de naam" : c.inbox ? "nog niet ingedeeld" : c.type==="negeer" ? "volgens een eerdere indeling" : "";
+  const bron = c.ov ? "door jullie zo ingedeeld" : c.eigen ? "eigen rekening: "+eigenNoot(c.eigen) : c.it ? "herkend aan het zoekwoord van de vaste last" : c.geleerd ? "geleerd van "+c.geleerd.n+" eerdere keuze"+(c.geleerd.n>1?"s":"")+" bij "+c.geleerd.partij+(c.geleerd.label?" ("+c.geleerd.label+")":"") : c.regel ? "volgens een eerdere indeling" : c.auto ? "automatisch herkend aan de naam" : c.inbox ? "nog niet ingedeeld" : c.type==="negeer" ? "volgens een eerdere indeling" : "";
   const wat0 = c.it ? (isSchuldPost(c.it) ? "schuld" : "koppel") : c.type==="negeer" ? "negeer" : "los";
   const losCats = ["Boodschappen",...VAR_CATS]; if(c.cat && !c.it && c.type!=="negeer" && !c.inbox && !losCats.includes(c.cat)) losCats.splice(losCats.length-1,0,c.cat);
   const f = $("#dlgForm");
@@ -2339,8 +2458,8 @@ function openHerindeel(sig){
     <fieldset style="border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:8px"><legend class="small muted" style="font-weight:600;margin-bottom:6px">Geldt voor</legend>
       <label class="chk"><input type="radio" name="hi-scope" value="een" checked><span>Alleen deze afschrijving</span></label>
       <label class="chk"><input type="radio" name="hi-scope" value="altijd"><span>Ook voortaan alles herkend aan:</span></label>
-      <div class="field" id="hi-keyf" hidden><input id="hi-key" value="${esc(key0)}" aria-label="Herkennen aan"><span class="hint">Tekst uit de naam of omschrijving. Korter is ruimer.</span></div></fieldset>
-    <div class="field"><label for="hi-note">Notitie</label><textarea id="hi-note" rows="2" maxlength="300" placeholder="Bijv. jaarlijkse indexatie, eenmalig, nog navragen">${esc((S.notities.get(sig)||{}).tekst||"")}</textarea></div>
+      <div class="field" id="hi-keyf" hidden><input id="hi-key" value="${esc(key0)}" aria-label="Herkennen aan"><span class="hint">Tekst uit de naam of omschrijving. Korter is ruimer.</span></div><span class="hint">Kies je "Alleen deze afschrijving" en een soort losse uitgave, dan leert de app ervan: een volgende afschrijving bij dezelfde partij met ongeveer hetzelfde bedrag (binnen 30%) krijgt dezelfde soort, met jullie notitie als reden.</span></fieldset>
+    <div class="field"><label for="hi-note">Waarvoor was dit? (notitie)</label><textarea id="hi-note" rows="2" maxlength="300" placeholder="Bijv. koffie, parkeren, cadeau, jaarlijkse indexatie">${esc((S.notities.get(sig)||{}).tekst||"")}</textarea></div>
     <div class="btnrow" style="justify-content:flex-end">${c.ov?`<button type="button" class="btn" id="hi-reset" style="margin-right:auto">Terug naar automatisch</button>`:""}<button type="button" class="btn" id="dlgCancel">Annuleren</button><button type="submit" class="btn primary">Opslaan</button></div>`;
   stripNewCat(f);
   const fillPosts = w => { const sel=$("#hi-post",f), schuld = w==="schuld", prev = sel.value || (c.it&&c.it.id) || "";
@@ -2484,7 +2603,7 @@ function bindVoorstellen(){
 }
 
 // ---------- binding ----------
-function bindAll(){
+function bindAll(){ if(S.focusDet) setTimeout(focusNa, 80);
   app.querySelectorAll("details[data-det]").forEach(d=>d.addEventListener("toggle",()=>{ const o=S.detOpen||(S.detOpen=new Set()); d.open? o.add(d.dataset.det) : o.delete(d.dataset.det); }));
   // rights: the nearest [data-perm] decides whether a tap edits or only shows
   const permOf = b => { const w = b.closest("[data-perm]"); return w ? w.dataset.perm : null; };
@@ -2722,14 +2841,14 @@ let dataGestart = false;
 function startData(){
   if(dataGestart) return; dataGestart = true;
   const on = (name, setter) => db.collection(name).onSnapshot(snap => { setter(snap.docs.map(d=>Object.assign({id:d.id}, d.data()))); S.loaded[name]=true; render(); }, err => { toast("Laden van "+name+" lukte niet ("+err.code+")"); });
-  on("posten", v=>S.posten=v); on("inkomsten", v=>S.inkomsten=v); on("extras", v=>S.extras=v); on("doelen", v=>S.doelen=v); on("afschriften", v=>{ S.afMeta=v; mergeStatements(); }); on("afschriftdelen", v=>{ S.afDelen=v; mergeStatements(); }); on("uitgaven", v=>S.uitgaven=v); on("gepland", v=>S.gepland=v); on("regels", v=>S.regels=v); on("herindeling", v=>{ S.herind = new Map(v.map(x=>[x.sig||x.id, x])); }); on("notities", v=>{ S.notities = new Map(v.map(x=>[x.sig||x.id, x])); });
+  on("posten", v=>S.posten=v); on("inkomsten", v=>S.inkomsten=v); on("extras", v=>S.extras=v); on("doelen", v=>S.doelen=v); on("afschriften", v=>{ S.afMeta=v; mergeStatements(); }); on("afschriftdelen", v=>{ S.afDelen=v; mergeStatements(); }); on("uitgaven", v=>S.uitgaven=v); on("gepland", v=>S.gepland=v); on("regels", v=>S.regels=v); on("herindeling", v=>{ S.herind = new Map(v.map(x=>[x.sig||x.id, x])); }); on("notities", v=>{ S.notities = new Map(v.map(x=>[x.sig||x.id, x])); }); on("verwacht", v=>{ S.verwacht = new Map(v.map(x=>[x.id, x])); VERV.clear(); v.forEach(x=>{ if(x.status==="vervalt") VERV.add(x.id); }); INK = {key:null, val:null}; EIGEN = {src:null, key:null, map:new Map()}; });
   db.doc("config/main").onSnapshot(snap => { if(snap.exists) S.config = Object.assign({}, CONFIG_DEFAULT, snap.data()); applyCats(); render(); });
 }
 // ---------- Firebase: opslag, inloggen met Google en Google Drive ----------
 // Deze web-app vervangt de koppelingen van de artifact: de opslag is Firestore (live bij beide), wie kijkt wordt herkend
 // aan het Google-account (Barry en Ilona, vergeleken op een vingerafdruk van het e-mailadres zodat de adressen niet in de
 // openbare code staan) en het Drive-kiesvenster praat rechtstreeks met de Google Drive API met de toegang van wie kijkt.
-const APP_VERSIE = "2026-10-14.1";
+const APP_VERSIE = "2026-10-14.2";
 const FB_CONFIG = {"apiKey": "AIzaSyDcsTDpRz6SE43gDWE9MvSQMKq7BdCNysY", "authDomain": "maandbudget-70d4b.firebaseapp.com", "projectId": "maandbudget-70d4b", "storageBucket": "maandbudget-70d4b.firebasestorage.app", "messagingSenderId": "3900760101", "appId": "1:3900760101:web:5dd1e90e1602b8813f1fcc"};
 const H_BARRY = "aaf5a8cde7f61d40135a75250297fa6b07330cb45a1595c9f42533a78dcefcd1";
 const H_ILONA = "0627728dbc7c040caa94d870f3e136ff6f69f95323d473cece8882f05a93513f";
