@@ -1346,7 +1346,7 @@ function geldstroom(plan, cur){
   const naUit = I - V - SP - U;
   const vrijRest = Math.max(0, vrijB - U);
   // walk from today to loondag: does every bill still fit in what is left?
-  // Is vandaag het echte saldo ingevuld (standNu), dan start de telling daar (saldo − creditcard die nu af moet);
+  // Is het echte saldo ooit ingevuld (standNu, doorgerekend tot vandaag), dan start de telling daar (saldo − creditcard die nu af moet);
   // anders blijft het de schatting uit de inkomsten en uitgaven van deze periode.
   const sd = standNu(p);
   let pos = sd ? sd.start : inn.ink.filter(x=>x.d<=TODAY).reduce((s,x)=>s+x.bedrag,0) + inn.extra - cur.uit.filter(x=>x.d<=TODAY).reduce((s,x)=>s+x.bedrag,0) - U;
@@ -1369,17 +1369,66 @@ function geldstroom(plan, cur){
   return {p, inn, an, vast, V, Vb, SP, I, U, vrijB, naUit, vrijRest, ev, risico, walk, topSoort, tekort: plan.months[0].tekortUit||0, planGeld: plan.months[0].beschikbaar};
 }
 // ---------- saldo-check: het echte saldo van de rekening, door Barry of Ilona ingevuld (saldo/stand) ----------
-// Alleen een stand van vandaag telt mee: het saldo verandert elke dag. Creditcard = wat er nog van de rekening af gaat
-// (elke keer een ander bedrag). Zonder datum, of met een datum t/m vandaag, gaat het nu van het saldo af; met een datum
-// later in de periode telt het mee op die dag; na loondag telt het niet mee. Boekingen van vandaag staan al in het saldo.
+// Het saldo wordt één keer ingevuld en blijft staan tot iemand het opnieuw invult. Elke dag rekent de tool het zelf door
+// van de dag van invullen (D) tot en met vandaag. Boekingen van dag D zelf zitten al in het ingevulde saldo.
+//   - Dagen die op een geüpload afschrift staan: alle bij- en afschrijvingen van die dagen, zoals ze echt op de rekening kwamen.
+//   - Dagen zonder afschrift: wat verwacht werd: inkomsten + , vaste lasten (ook automatisch sparen en boodschappen) − ,
+//     zelf ingevoerde uitgaven − , geplande uitgaven − , en betalingen uit het plan die na het invullen zijn afgevinkt − .
+// Creditcard = wat er nog van de rekening af gaat. Zonder datum (of met een datum t/m dag D) gaat het meteen van het saldo af.
+// Met een latere datum gaat het op die dag af. Staat er op het afschrift na dag D een afschrijving van (bijna) hetzelfde
+// bedrag, dan is de creditcard afgeschreven en zit hij in het saldo. Na loondag telt een creditcard met datum nog niet mee.
 function standNu(p){
   const st = S.stand; if(!st || !st.datum) return null;
-  const d = parseIso(st.datum); if(!d || daysBetween(d, TODAY)!==0) return null;
-  const saldo = num(st.saldo), cc = Math.max(0, num(st.creditcard)), ccD = parseIso(st.ccDatum);
-  const ccNu = cc>0 && (!ccD || ccD<=TODAY);
-  const ccPeriode = cc>0 && !!ccD && ccD>TODAY && ccD<=p.end;
-  const ccNaLoondag = cc>0 && !!ccD && ccD>p.end;
-  return {saldo, cc, ccD, ccNu, ccPeriode, ccNaLoondag, start: saldo - (ccNu ? cc : 0), tijd: st.tijd, door: st.door};
+  const D = parseIso(st.datum); if(!D || D>TODAY) return null;
+  const saldo0 = num(st.saldo), cc = Math.max(0, num(st.creditcard)), ccD = parseIso(st.ccDatum);
+  const van = addDays(D, 1), dagen = daysBetween(D, TODAY);
+  const dekking = S.afschriften.map(a => [parseIso(a.van), parseIso(a.tot)]).filter(x => x[0] && x[1]);
+  const gedekt = d => dekking.some(x => d>=x[0] && d<=x[1]);
+  // 1. echte boekingen na dag D (elke boeking één keer, ook als afschriften elkaar overlappen)
+  const rows = [], seen = new Set();
+  if(dagen>0) S.afschriften.forEach(a => (a.rows||[]).forEach(r => { const d = parseIso(r[0]); if(!d || d<van || d>TODAY) return; const sig = rowSig(r); if(seen.has(sig)) return; seen.add(sig); rows.push(r); }));
+  // creditcard op het afschrift?
+  let ccRow = null;
+  if(cc>0 && rows.length){
+    const kand = rows.filter(r => r[2]<0 && Math.abs(-r[2]-cc)<=1 && (!ccD || ccD<=D || parseIso(r[0])>=addDays(ccD,-10)));
+    ccRow = kand.sort((a,b)=>Math.abs(-a[2]-cc)-Math.abs(-b[2]-cc))[0] || null;
+  }
+  const af = {in:0, uit:0, n:rows.length};
+  rows.forEach(r => { if(r[2]>0) af.in += r[2]; else af.uit += -r[2]; });
+  // 2. dagen na dag D zonder afschrift: wat verwacht werd
+  const vw = {in:0, vast:0, los:0, gepl:0, plan:0, cc:0, dagen:0};
+  if(dagen>0){
+    for(let d=van; d<=TODAY; d=addDays(d,1)) if(!gedekt(d)) vw.dagen++;
+    if(vw.dagen){
+      const open = d => d>=van && d<=TODAY && !gedekt(d);
+      S.inkomsten.forEach(it => occurrences(it, van, TODAY).forEach(d => { if(open(d)) vw.in += num(it.bedrag); }));
+      S.posten.forEach(it => occurrences(it, van, TODAY).forEach(d => { if(open(d)) vw.vast += num(it.bedrag); }));
+      S.uitgaven.forEach(u => { const d = parseIso(u.datum); if(d && open(d)) vw.los += num(u.bedrag); });
+      S.gepland.forEach(g => { const d = parseIso(g.datum); if(d && open(d)) vw.gepl += num(g.bedrag); });
+      const t0 = st.tijd ? new Date(st.tijd) : null;
+      (S.planbet||[]).forEach(r => { if(r.status==="nee" || !(num(r.betaald)>0)) return; const t = r.bijgewerkt ? new Date(r.bijgewerkt) : null;
+        if(!t || isNaN(t) || (t0 && !isNaN(t0) && t<=t0)) return; const d = day0(t); if(open(d)) vw.plan += num(r.betaald); });
+    }
+  }
+  // 3. de creditcard
+  let ccNu = false, ccPeriode = false, ccNaLoondag = false, ccAf = false, ccAfD = null;
+  if(cc>0){
+    if(ccRow){ ccAf = true; ccAfD = parseIso(ccRow[0]); }
+    else if(!ccD || ccD<=D) ccNu = true;                                   // moest bij het invullen al van het saldo af
+    else if(ccD<=TODAY){ if(gedekt(ccD)) ccNu = true; else { ccAf = true; ccAfD = ccD; vw.cc = cc; } }   // datum voorbij: op het afschrift nog niet gezien = gaat nu af; geen afschrift = verwacht afgeschreven
+    else if(ccD<=p.end) ccPeriode = true;
+    else ccNaLoondag = true;
+  }
+  const verwacht = vw.in - vw.vast - vw.los - vw.gepl - vw.plan - vw.cc;
+  const saldo = Math.round((saldo0 + af.in - af.uit + verwacht)*100)/100;
+  return {saldo, saldo0, D, dagen, af, vw, verwacht, geschat: vw.dagen>0, cc, ccD, ccNu, ccPeriode, ccNaLoondag, ccAf, ccAfD,
+    start: saldo - (ccNu ? cc : 0), tijd: st.tijd, door: st.door};
+}
+// korte tekst bij het saldo: wanneer ingevuld en of het sindsdien is doorgerekend
+function standTekst(sd){
+  const tijd = sd.tijd ? new Date(sd.tijd) : null, hhmm = tijd && !isNaN(tijd) ? String(tijd.getHours()).padStart(2,"0")+":"+String(tijd.getMinutes()).padStart(2,"0") : "";
+  if(!sd.dagen) return `ingevuld${sd.door?" door "+esc(sd.door):""}${hhmm?" om "+hhmm:""}`;
+  return `ingevuld op ${dkort(sd.D)}${sd.door?" door "+esc(sd.door):""} (${eur(sd.saldo0)}), doorgerekend tot vandaag${sd.geschat ? (sd.af.n ? " met het afschrift en wat verwacht werd" : " met wat verwacht werd") : " met het afschrift"}`;
 }
 function parseBedrag(s){   // "1.234,56", "1234,5", "12.50" → getal; ongeldig → NaN. Een min doet het vinkje "staat rood", niet dit veld.
   let t = String(s ?? "").replace(/[€\s]/g,"");
@@ -1658,7 +1707,7 @@ function geldlijn(o){
   cur.uit.filter(x=>x.d>TODAY && !isSparenPost(x.it)).forEach(rek);
   pc1.uit.filter(x=>!isSparenPost(x.it)).forEach(rek);
   let ccNa = null;
-  if(sd && sd.cc>0 && sd.ccD && sd.ccD>TODAY){
+  if(sd && (sd.ccPeriode || sd.ccNaLoondag)){
     if(sd.ccD<=eind) push({d:sd.ccD, lvl:1, soort:"cc", naam:"Creditcard", wens:sd.cc, sub:"ingevuld bij het saldo", saldo:true});
     else ccNa = {d:sd.ccD, cc:sd.cc};
   }
@@ -1873,11 +1922,10 @@ function renderOverzicht(plan, cur){
   const gl = plan.gl, p0 = gl.p0, loondag = addDays(p0.end,1), dagenTot = daysBetween(TODAY, loondag), t0 = gl.per[0], t1 = gl.per[1];
   S.pbInfo = new Map();
   const vd = oordeel(gl), v = t0.vrij, sd = gl.sd;
-  const st = S.stand, tijd = st && st.tijd ? new Date(st.tijd) : null, hhmm = tijd && !isNaN(tijd) ? String(tijd.getHours()).padStart(2,"0")+":"+String(tijd.getMinutes()).padStart(2,"0") : "";
   const magSaldo = A("ov.saldo");
   const saldoRegel = !Z("ov.saldo") ? "" : sd
-    ? `<div class="sal3"><span>Op de rekening <b class="${sd.saldo<-0.5?"neg":""}">${eur(sd.saldo)}</b>${sd.ccNu?` − creditcard <b>${eur(sd.cc)}</b>`:""}<small>ingevuld${sd.door?" door "+esc(sd.door):""}${hhmm?" om "+hhmm:""}</small></span>${magSaldo?`<button type="button" class="sumbtn" data-saldo>Bijwerken</button>`:""}</div>`
-    : `<div class="sal3 oud"><span>${st && st.datum ? `Saldo van ${dkort(parseIso(st.datum))} is niet meer actueel.` : "Nog geen saldo ingevuld."} Gerekend met een schatting: <b>${eur(gl.start)}</b></span>${magSaldo?`<button type="button" class="sumbtn" data-saldo>Saldo van vandaag</button>`:""}</div>`;
+    ? `<div class="sal3"><span>Op de rekening <b class="${sd.saldo<-0.5?"neg":""}">${eur(sd.saldo)}</b>${sd.ccNu?` − creditcard <b>${eur(sd.cc)}</b>`:""}<small>${standTekst(sd)}</small></span>${magSaldo?`<button type="button" class="sumbtn" data-saldo>Aanpassen</button>`:""}</div>`
+    : `<div class="sal3 oud"><span>Nog geen saldo ingevuld. Gerekend met een schatting: <b>${eur(gl.start)}</b></span>${magSaldo?`<button type="button" class="sumbtn" data-saldo>Saldo invullen</button>`:""}</div>`;
   const hero = `<section class="hero3" aria-label="Vrij te besteden">
     <div class="h3top"><span class="lbl3">Vrij te besteden tot ${dkort(p0.end)}</span><span class="pill3">nog ${dagenTot} ${dagenTot===1?"dag":"dagen"}</span></div>
     <div class="big3">${eur0(v.x)}</div>
@@ -1931,7 +1979,7 @@ function ladderKaart(gl, n, plan, g){
       : rij(3, "Vrij besteden", vrijB>0.5 ? `${eur0(vrijX)} <small>van ${eur0(vrijB)}</small>` : eur0(0), n===0 ? (vrijX>0.5 ? `${eur(vrijX/Math.max(1,gl.dagen0))} per dag` : "geen ruimte") : `${eur0(gl.vrijCfg)} per maand`, statusChip(vrijX, vrijB), vrijB>0.5 ? vrijX/vrijB : 1, vrijBody, "v")}
     ${rij(4, "Sparen", t.sparen.wens>0.5 ? `${eur0(t.sparen.x)} <small>van ${eur0(t.sparen.wens)}</small>` : eur0(0), t.sparen.wens>0.5 ? "automatisch, geplande aankopen en spaardoelen" : "niets gepland", statusChip(t.sparen.x, t.sparen.wens), t.sparen.wens>0.5 ? t.sparen.x/t.sparen.wens : 1, `<div class="rows">${t.sparen.ev.map(planRij).join("") || `<p class="hint">Niets om te sparen in deze periode.</p>`}</div>`, "s")}
     </div>
-    <p class="hint">${n===0 ? `Gerekend vanaf ${gl.schatting ? "een schatting" : "het saldo van vandaag"} (${eur(gl.start)}), met ${eur0(t.inkomsten)} aan inkomsten die nog komen.` : ""} Elke trede krijgt pas iets als alles erboven betaald kan worden, ook wat later tot ${dkort(gl.eind)} nog afgaat.</p>
+    <p class="hint">${n===0 ? `Gerekend vanaf ${gl.schatting ? "een schatting" : gl.sd.dagen ? "het doorgerekende saldo" : "het saldo van vandaag"} (${eur(gl.start)}), met ${eur0(t.inkomsten)} aan inkomsten die nog komen.` : ""} Elke trede krijgt pas iets als alles erboven betaald kan worden, ook wat later tot ${dkort(gl.eind)} nog afgaat.</p>
   </section>`;
 }
 function komtKaart(gl, cur, plan){
@@ -2252,18 +2300,22 @@ function renderTijdlijn(plan, cur){
     <path d="${path}" class="s"/>
     <line id="tlCur" x1="0" x2="0" y1="0" y2="${H}" class="cur"/></svg>`;
   const head = `<section class="tl-head" id="tlHead" aria-live="off" aria-label="Stand op de rekening">
-    <div class="tlh-top"><span id="tlD">Nu · ${dkort(TODAY)}</span><span class="tlh-tag" id="tlTag" data-nu="${t.schatting ? "schatting" : "saldo van vandaag"}">${t.schatting ? "schatting" : "saldo van vandaag"}</span></div>
+    <div class="tlh-top"><span id="tlD">Nu · ${dkort(TODAY)}</span><span class="tlh-tag" id="tlTag" data-nu="${t.schatting ? "schatting" : t.sd.dagen ? "doorgerekend" : "saldo van vandaag"}">${t.schatting ? "schatting" : t.sd.dagen ? "doorgerekend" : "saldo van vandaag"}</span></div>
     <div class="tlh-big${t.start<-0.5?" neg":""}" id="tlS">${eur(t.start)}</div>
     <div class="tlh-sub">vrij te besteden <b id="tlQ">${eur(TL.nu.q)}</b></div>
     ${spark}
   </section>`;
   // Nu
   const r = (l, v, cls) => `<div class="wf"><span>${l}</span><b class="${cls||""}">${v}</b></div>`;
-  const st = t.sd, stTijd = st && S.stand && S.stand.tijd ? new Date(S.stand.tijd) : null;
+  const st = t.sd, stTijd = st && st.tijd ? new Date(st.tijd) : null;
   const hhmm = stTijd && !isNaN(stTijd) ? " om "+String(stTijd.getHours()).padStart(2,"0")+":"+String(stTijd.getMinutes()).padStart(2,"0") : "";
+  const pm = x => (x<-0.005 ? "− " : "+ ")+eur(Math.abs(x));
+  const sinds = !st || !st.dagen ? "" : (st.af.n ? r(`Sindsdien op het afschrift (${st.af.n} boeking${st.af.n===1?"":"en"})`, pm(st.af.in-st.af.uit)) : "")
+    + (st.geschat ? r(`Sindsdien verwacht, nog zonder afschrift (${st.vw.dagen} dag${st.vw.dagen===1?"":"en"})`, pm(st.verwacht)) : "")
+    + `<div class="wf tot"><span>Saldo nu, doorgerekend</span><b class="${st.saldo<-0.5?"neg":""}">${eur(st.saldo)}</b></div>`;
   const v = t.per[0].vrij;
-  const startBlok = st ? `<div class="wfall">${r(`Saldo${st.door?" (ingevuld door "+esc(st.door)+hhmm+")":""}`, eur(st.saldo), st.saldo<0?"neg":"")}${st.ccNu ? r("Creditcard, gaat nu af", "− "+eur(st.cc)) : ""}<div class="wf tot"><span>Start van de tijdlijn</span><b class="${t.start<-0.5?"neg":""}">${eur(t.start)}</b></div>${r(`Vrij te besteden tot ${dkort(t.p0.end)}`, `${eur0(v.x)}${v.x<v.budget-0.5?` van ${eur0(v.budget)}`:""}`, v.x<v.budget-0.5?"neg":"")}</div>`
-    : `<div class="vd3 warn">${v3status("warn")}<div><b>Geen saldo van vandaag ingevuld</b><small>De tijdlijn start met een schatting uit wat er deze periode binnenkwam en uitging: ${eur(t.start)}. Vul het echte saldo in voor een kloppende lijn.</small></div></div>${A("ov.saldo") ? `<button type="button" class="btn primary wide" data-saldo>Saldo invullen</button>` : ""}`;
+  const startBlok = st ? `<div class="wfall">${(st.dagen ? r(`Saldo ingevuld op ${dkort(st.D)}${st.door?" door "+esc(st.door):""}`, eur(st.saldo0), st.saldo0<0?"neg":"") + sinds : r(`Saldo${st.door?" (ingevuld door "+esc(st.door)+hhmm+")":""}`, eur(st.saldo), st.saldo<0?"neg":""))}${st.ccNu ? r("Creditcard, gaat nu af", "− "+eur(st.cc)) : ""}<div class="wf tot"><span>Start van de tijdlijn</span><b class="${t.start<-0.5?"neg":""}">${eur(t.start)}</b></div>${r(`Vrij te besteden tot ${dkort(t.p0.end)}`, `${eur0(v.x)}${v.x<v.budget-0.5?` van ${eur0(v.budget)}`:""}`, v.x<v.budget-0.5?"neg":"")}</div>`
+    : `<div class="vd3 warn">${v3status("warn")}<div><b>Nog geen saldo ingevuld</b><small>De tijdlijn start met een schatting uit wat er deze periode binnenkwam en uitging: ${eur(t.start)}. Vul één keer het echte saldo in; daarna rekent de tool het elke dag zelf door.</small></div></div>${A("ov.saldo") ? `<button type="button" class="btn primary wide" data-saldo>Saldo invullen</button>` : ""}`;
   const nuMk = t.nuMk.map(e=>evHtml(e, TL.nu.q)).join("");
   const nuMeldL = zm ? (hasMore("tlnu") ? meld.nu : meld.nu.slice(0,3)) : [];
   const nuMeld = nuMeldL.map(tlMeld).join("") + (zm ? moreBtn("tlnu", meld.nu.length, 3) : "");
@@ -2271,7 +2323,7 @@ function renderTijdlijn(plan, cur){
   const naL = (t.ccNa ? [{cls:"info", t:`Creditcard ${eur(t.ccNa.cc)} op ${dkort(t.ccNa.d)}`, s:"Gaat pas na het einde van de tijdlijn af en staat er dus niet op."}] : []).concat(zm ? meld.daarna : []);
   const daarna = naL.length ? `<section class="card c3"><div class="h3row"><h2>Daarna</h2><span class="sub3">na ${dkort(t.eind)}</span></div><div class="tl-mls">${naL.map(tlMeld).join("")}</div></section>` : "";
   const uitleg = `<details class="det" data-det="tl:uitleg" ${isOpen("tl:uitleg")?"open":""}><summary><div class="grow"><div class="name">Hoe rekent de tijdlijn?</div><div class="meta">Stand aan het eind van elke dag</div></div><span class="chev">${ICO3.down}</span></summary><div class="tl-help">
-    <p>De lijn is wat er op de rekening staat: ${t.schatting ? "de schatting van nu" : "het ingevulde saldo van vandaag"}, plus inkomsten, min alles wat afgaat: rekeningen, de creditcard, terugbetalingen, sparen, geplande aankopen en het vrije besteden (gelijk verdeeld over de dagen).</p>
+    <p>De lijn is wat er op de rekening staat: ${t.schatting ? "de schatting van nu" : t.sd.dagen ? `het saldo dat op ${dkort(t.sd.D)} is ingevuld, doorgerekend tot vandaag (met het afschrift, en voor dagen zonder afschrift met wat er verwacht werd)` : "het ingevulde saldo van vandaag"}, plus inkomsten, min alles wat afgaat: rekeningen, de creditcard, terugbetalingen, sparen, geplande aankopen en het vrije besteden (gelijk verdeeld over de dagen).</p>
     <p>Als het krap wordt, gaat het in deze volgorde: <b>1 rekeningen</b>, <b>2 terugbetalingen</b>, <b>3 vrij besteden</b>, <b>4 sparen</b>. Een betaling gaat alleen af als alles met meer voorrang, ook later tot ${dkort(t.eind)}, nog betaald kan worden. Lukt dat niet, dan staat er een geel blok met wat er wel kan (soms €0).</p>
     <p>Is de betaaldag voorbij, dan vraagt de tool "overgemaakt?". Zolang jullie dat niet invullen, houdt hij het geld apart.</p>
     <p>Tik op een regel om de vaste last, het inkomen, het doel of de geplande uitgave te openen. Tik op de grafiek om naar een dag te springen.</p></div></details>`;
@@ -2727,15 +2779,17 @@ function openUpload(){
 function openSaldo(){
   if(!A("ov.saldo")) return toast("Het saldo invullen staat voor jou uit.");
   const loondag = addDays(periodN(0).end, 1);
-  const huidig = S.stand && S.stand.datum && daysBetween(parseIso(S.stand.datum), TODAY)===0 ? S.stand : null;   // alleen een stand van vandaag vooraf invullen
-  const fmt = n => String(Math.abs(n)).replace(".", ",");
-  const sal0 = huidig ? num(huidig.saldo) : null, cc0 = huidig ? num(huidig.creditcard) : 0;
+  // vooraf ingevuld: het doorgerekende saldo van nu en de creditcard die nog niet is afgeschreven
+  const sdn = standNu(periodN(0));
+  const fmt = n => (Math.round(Math.abs(n)*100)/100).toFixed(2).replace(".", ",");
+  const ccOpen = sdn && (sdn.ccNu || sdn.ccPeriode || sdn.ccNaLoondag);
+  const sal0 = sdn ? sdn.saldo : null, cc0 = ccOpen ? sdn.cc : 0, ccD0 = ccOpen && sdn.ccD && sdn.ccD>TODAY ? iso(sdn.ccD) : "";
   openSheet(`<div class="sheet-h"><h2>Wat staat er op de rekening?</h2><button type="button" class="iconbtn" data-close aria-label="Sluiten">✕</button></div>
-    <p class="hint">Kijk in de ING-app en vul in wat je ziet. Ik reken het door tot loondag (${dkort(loondag)}).</p>
+    <p class="hint">${sdn ? `Dit is het saldo dat op ${dkort(sdn.D)} is ingevuld, doorgerekend tot vandaag. Klopt het niet met de ING-app, vul dan in wat je daar ziet. Laat je het staan, dan blijft het zoals het is.` : "Kijk in de ING-app en vul in wat je ziet. Dit hoeft maar één keer: daarna rekent de tool het elke dag zelf door, met het afschrift en wat er verwacht wordt."} Ik reken het door tot loondag (${dkort(loondag)}).</p>
     <div class="field"><label for="sdSaldo">Saldo ING-rekening (€)</label><input id="sdSaldo" class="bigin" inputmode="decimal" placeholder="0,00" autocomplete="off" value="${sal0==null ? "" : esc(fmt(sal0))}"></div>
     <label class="sd-chk"><input type="checkbox" id="sdRood" ${sal0!=null && sal0<0 ? "checked" : ""}> De rekening staat rood (negatief saldo)</label>
-    <div class="field"><label for="sdCC">Creditcard: nog van de rekening af te schrijven (€)</label><input id="sdCC" inputmode="decimal" placeholder="0" autocomplete="off" value="${cc0>0 ? esc(fmt(cc0)) : ""}"><span class="hint">Het bedrag dat nog van ING gaat. Is het al afgeschreven, dan zit het al in je saldo: laat dit dan leeg.</span></div>
-    <div class="field" id="sdDatumF"><label for="sdCCD">Wanneer wordt de creditcard afgeschreven? (optioneel)</label><input id="sdCCD" type="date" value="${huidig && huidig.ccDatum ? esc(huidig.ccDatum) : ""}"><span class="hint">Leeg = het moet nu al van het saldo af. Met een datum telt het pas op die dag mee.</span></div>
+    <div class="field"><label for="sdCC">Creditcard: nog van de rekening af te schrijven (€)</label><input id="sdCC" inputmode="decimal" placeholder="0" autocomplete="off" value="${cc0>0 ? esc(fmt(cc0)) : ""}"><span class="hint">Het bedrag dat nog van ING gaat. Blijft staan tot het is afgeschreven. Is het al afgeschreven, dan zit het al in je saldo: maak dit dan leeg.</span></div>
+    <div class="field" id="sdDatumF"><label for="sdCCD">Wanneer wordt de creditcard afgeschreven? (optioneel)</label><input id="sdCCD" type="date" value="${esc(ccD0)}"><span class="hint">Leeg = het moet nu al van het saldo af. Met een datum telt het pas op die dag mee.</span></div>
     <div class="sd-live" id="sdLive" aria-live="polite"></div>
     <button type="button" class="btn primary wide" id="sdSave">Bewaar en reken door</button>`, d => {
       const iS=$("#sdSaldo"), iR=$("#sdRood"), iC=$("#sdCC"), iD=$("#sdCCD"), fD=$("#sdDatumF"), lv=$("#sdLive");
@@ -3672,7 +3726,7 @@ function startData(){
 // Deze web-app vervangt de koppelingen van de artifact: de opslag is Firestore (live bij beide), wie kijkt wordt herkend
 // aan het Google-account (Barry en Ilona, vergeleken op een vingerafdruk van het e-mailadres zodat de adressen niet in de
 // openbare code staan) en het Drive-kiesvenster praat rechtstreeks met de Google Drive API met de toegang van wie kijkt.
-const APP_VERSIE = "2026-10-14.3";
+const APP_VERSIE = "2026-10-15.1";
 const FB_CONFIG = {"apiKey": "AIzaSyDcsTDpRz6SE43gDWE9MvSQMKq7BdCNysY", "authDomain": "maandbudget-70d4b.firebaseapp.com", "projectId": "maandbudget-70d4b", "storageBucket": "maandbudget-70d4b.firebasestorage.app", "messagingSenderId": "3900760101", "appId": "1:3900760101:web:5dd1e90e1602b8813f1fcc"};
 const H_BARRY = "aaf5a8cde7f61d40135a75250297fa6b07330cb45a1595c9f42533a78dcefcd1";
 const H_ILONA = "0627728dbc7c040caa94d870f3e136ff6f69f95323d473cece8882f05a93513f";
