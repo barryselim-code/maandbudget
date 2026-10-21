@@ -2978,7 +2978,7 @@ function verwachtHtml(an, cat){
     return `<button type="button" class="drow ghost${x.v&&x.v.status==="vervalt"?" weg":""}" data-verw="${esc(x.it.id)}|${iso(x.d)}"><span>${dkort(x.d)} · ${esc(x.it.naam)} <span class="tag ghosttag">${esc(st)}</span>${x.v&&x.v.notitie?`<span class="note">✎ ${esc(x.v.notitie)}</span>`:""}</span><b>${eur(num(x.it.bedrag))}</b></button>`; }).join("")}
     <p class="hint" style="margin:2px 0 0">Tik om aan te geven wat er aan de hand is: komt nog, valt deze keer weg, anders betaald of gestopt.</p></div>`;
 }
-function openVerwacht(id, isoD){
+function openNietAfgeschreven(id, isoD){
   const it = S.posten.find(p=>p.id===id), d = parseIso(isoD); if(!it || !d) return;
   const v = verwOf(id, d) || {}, mag = A("af.soort") || A("af.vaste");
   const opt = (k, t, s) => `<label class="chk"><input type="radio" name="vw" value="${k}" ${v.status===k?"checked":""} ${mag?"":"disabled"}><span><b style="display:inline">${t}</b><br><span class="small muted">${s}</span></span></label>`;
@@ -3004,7 +3004,7 @@ function openVerwacht(id, isoD){
     const wis = $("#vw-wis"); if(wis) wis.onclick = async () => { try{ await db.doc("verwacht/"+verwId(id, d)).delete(); toast("Gewist"); dlg.close(); }catch(e){ toast("Wissen lukte niet."); } };
   });
 }
-document.addEventListener("click", e => { const b = e.target.closest && e.target.closest("[data-verw]"); if(!b) return; const [id, d] = b.dataset.verw.split("|"); openVerwacht(id, d); });
+document.addEventListener("click", e => { const b = e.target.closest && e.target.closest("[data-verw]"); if(!b) return; const [id, d] = b.dataset.verw.split("|"); openNietAfgeschreven(id, d); });
 
 // ---------- de app leert van jullie indeling ----------
 // Elke keer dat jullie één afschrijving zelf als losse uitgave indelen ("Anders indelen" → alleen deze afschrijving),
@@ -3726,7 +3726,7 @@ function startData(){
 // Deze web-app vervangt de koppelingen van de artifact: de opslag is Firestore (live bij beide), wie kijkt wordt herkend
 // aan het Google-account (Barry en Ilona, vergeleken op een vingerafdruk van het e-mailadres zodat de adressen niet in de
 // openbare code staan) en het Drive-kiesvenster praat rechtstreeks met de Google Drive API met de toegang van wie kijkt.
-const APP_VERSIE = "2026-10-15.1";
+const APP_VERSIE = "2026-10-21.1";
 const FB_CONFIG = {"apiKey": "AIzaSyDcsTDpRz6SE43gDWE9MvSQMKq7BdCNysY", "authDomain": "maandbudget-70d4b.firebaseapp.com", "projectId": "maandbudget-70d4b", "storageBucket": "maandbudget-70d4b.firebasestorage.app", "messagingSenderId": "3900760101", "appId": "1:3900760101:web:5dd1e90e1602b8813f1fcc"};
 const H_BARRY = "aaf5a8cde7f61d40135a75250297fa6b07330cb45a1595c9f42533a78dcefcd1";
 const H_ILONA = "0627728dbc7c040caa94d870f3e136ff6f69f95323d473cece8882f05a93513f";
