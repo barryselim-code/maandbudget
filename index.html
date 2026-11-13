@@ -615,6 +615,12 @@ button.tl-ml{cursor:pointer}
 .bstrow{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 button.bst{border:0;font:inherit;font-size:11.5px;font-weight:650;cursor:pointer;min-height:28px;padding:3px 10px}
 button.bst:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.seg.big.vier button{padding:9px 3px;gap:4px;font-size:13px} .seg.big.vier button .cnt{min-width:17px;height:17px;font-size:10.5px}
+.toast[popover]{inset:auto;left:50%;bottom:calc(90px + env(safe-area-inset-bottom,0px));margin:0;border:0;width:max-content;max-width:calc(100vw - 32px);overflow:visible}
+.bijtag{display:inline-block;font-size:11.5px;font-weight:700;padding:1px 7px;border-radius:999px;margin-left:2px;background:var(--surface);color:var(--good);white-space:nowrap}
+.alg-d{font-size:12px;font-weight:650;color:var(--muted);padding:8px 0 2px;text-transform:uppercase;letter-spacing:.05em}
+.tkr{display:flex;flex-direction:column;gap:6px;padding:10px 0;border-top:1px solid var(--line)} .tkr:first-child{border-top:0}
+.tkr .t1{display:flex;justify-content:space-between;gap:10px} .tkr .t1 b{white-space:nowrap} .tkr small{color:var(--muted);font-size:12.5px}
 .bst{font-size:11.5px;font-weight:650;border-radius:999px;padding:2px 9px;background:var(--surface-2);color:var(--muted);line-height:1.5}
 .bst.good{background:var(--good-soft);color:var(--good)} .bst.warn{background:var(--geel);color:var(--geel-ink)} .bst.bad{background:var(--bad-soft);color:var(--bad)}
 /* web-app: adviesmotor */
@@ -697,12 +703,21 @@ const dlang = d => d.getDate()+" "+MAANDEN_L[d.getMonth()]+" "+d.getFullYear();
 const daysBetween = (a,b) => Math.round((day0(b)-day0(a))/86400000);
 const num = v => { const n = typeof v==="number"? v : parseFloat(String(v??"").replace(",",".")); return isFinite(n)? n : 0; };
 const uid = () => Date.now().toString(36)+Math.random().toString(36).slice(2,7);
-function toast(msg){ const t=document.createElement("div"); t.className="toast"; t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),2600); }
+// melding: met de Popover API in de bovenste laag, zodat hij ook boven een geopend paneel (dialog) staat
+function toast(msg){ const t=document.createElement("div"); t.className="toast"; t.textContent=msg; t.setAttribute("role","status");
+  let boven = false; try{ if(typeof t.showPopover==="function"){ t.setAttribute("popover","manual"); document.body.appendChild(t); t.showPopover(); boven = true; } }catch(e){}
+  if(!boven && !t.isConnected) document.body.appendChild(t);
+  setTimeout(()=>t.remove(),2600); }
 const store = { get(k){ try{return localStorage.getItem(k);}catch(e){return null;} }, set(k,v){ try{localStorage.setItem(k,v);}catch(e){} } };
 
 // ---------- state ----------
-const CONFIG_DEFAULT = {loondag:25, vrijBudget:300, spaarsaldo:0, buffer:1000, eigenRekeningen:""};
-const S = { config:Object.assign({}, CONFIG_DEFAULT), posten:[], inkomsten:[], extras:[], doelen:[], afschriften:[], afMeta:[], afDelen:[], uitgaven:[], gepland:[], regels:[], loaded:{}, tab: store.get("tab")||"overzicht", afschriftSel:null, advies:{}, herind:new Map(), notities:new Map(), stand:null, planbet:[] };
+const CONFIG_DEFAULT = {loondag:25, vrijBudget:300, spaarsaldo:0, buffer:1000, eigenRekeningen:"", loondagVerschuiven:"eerder", roodLimiet:0, ondergrens:0, overblijft:"vrij"};
+// instellingen van 13 nov: rood staan als laatste redmiddel, marge op de rekening, wat er overblijft
+const roodLimiet = () => Math.max(0, num(S.config.roodLimiet));
+const ondergrens = () => Math.max(0, num(S.config.ondergrens));
+const restNaarSparen = () => S.config.overblijft==="sparen";
+const vrijBudgetCfg = () => restNaarSparen() ? 0 : Math.max(0, num(S.config.vrijBudget));
+const S = { config:Object.assign({}, CONFIG_DEFAULT), posten:[], inkomsten:[], extras:[], doelen:[], afschriften:[], afMeta:[], afDelen:[], uitgaven:[], gepland:[], regels:[], terugkerend:[], loaded:{}, tab: store.get("tab")||"overzicht", afschriftSel:null, advies:{}, herind:new Map(), notities:new Map(), stand:null, planbet:[] };
 let db = null, sample = null, mcp = null, userCap = null;
 const TODAY = day0(new Date());
 
@@ -740,12 +755,14 @@ const SCHERMEN = [
     ["af.blok","Grijs blok \"Afgeschreven\"","z"],
     ["af.indelen","In te delen","za","Aanpassen: afschrijvingen indelen"],
     ["af.soort","Per soort","za","Aanpassen: anders indelen, notities"],
+    ["af.bij","Bijschrijvingen (tabje Bij)","za","Aanpassen: bijschrijvingen indelen"],
     ["af.vaste","Vaste lasten op het afschrift","za","Aanpassen: \"Vaste last op €x zetten\", anders indelen"],
+    ["af.terugkerend","Terugkerende betalingen","za","Aanpassen: vaste last of inkomen maken, niet vast"],
     ["af.genegeerd","Genegeerd","za","Aanpassen: anders indelen"],
     ["af.analyse","Analyse","z"],
     ["af.verwijderen","Afschrift verwijderen","a"]]},
   {k:"instellingen", t:"Instellingen", items:[
-    ["in.loondag","Loondag","za"],["in.vrijBudget","Vrij besteedbaar per maand","za"],["in.spaarsaldo","Huidig spaarsaldo","za"],["in.buffer","Gewenste buffer","za"],
+    ["in.loondag","Loondag","za"],["in.loondagVerschuiven","Loondag in het weekend of op een feestdag","za"],["in.vrijBudget","Vrij besteedbaar per maand","za"],["in.overblijft","Wat er overblijft (vrij besteden of sparen)","za"],["in.roodLimiet","Rood staan mag tot","za"],["in.ondergrens","Marge op de rekening","za"],["in.spaarsaldo","Huidig spaarsaldo","za"],["in.buffer","Gewenste buffer","za"],
     ["in.eigenCats","Eigen categorieën vaste lasten","za","Aanpassen: ook \"+ Nieuwe categorie\" bij vaste lasten"],
     ["in.eigenVarCats","Eigen soorten losse uitgaven","za","Aanpassen: ook \"+ Nieuwe categorie\" bij losse uitgaven"],
     ["in.eigenRekeningen","Eigen rekeningen","za"]]},
@@ -754,7 +771,9 @@ const PROFIELEN = {barry:"Barry", ilona:"Ilona"};
 const T = {profielen:{}, ilonaId:null, loaded:false};   // toegang/rechten
 const WHO = {me:null, isOwner:false, profiel:null, preview:null, verzoek:null, verzoeken:[], started:false};
 // Nieuwe onderdelen van de Tijdlijn (14 okt) volgen, zolang Barry ze niet zelf instelt, het onderdeel dat dezelfde informatie al toont.
-const ERFT = {"tl.saldo":"ov.komt", "tl.plan":"pl.doelen", "tl.meldingen":"ov.letop"};
+// Ook de onderdelen van 13 nov volgen een bestaand onderdeel zolang Barry ze niet zelf instelt.
+const ERFT = {"tl.saldo":"ov.komt", "tl.plan":"pl.doelen", "tl.meldingen":"ov.letop", "af.bij":"af.soort", "af.terugkerend":"af.indelen",
+  "in.loondagVerschuiven":"in.loondag", "in.overblijft":"in.vrijBudget", "in.roodLimiet":"in.vrijBudget", "in.ondergrens":"in.vrijBudget"};
 function rechtVan(p, k){ const r = ((T.profielen||{})[p]||{})[k]; if(!r && ERFT[k]) return rechtVan(p, ERFT[k]); return {z: r ? r.z!==false : true, a: r ? r.a!==false : true}; }
 function actief(){ return WHO.preview || WHO.profiel; }
 function itemDef(k){ for(const s of SCHERMEN) for(const it of s.items) if(it[0]===k) return it; return null; }
@@ -828,19 +847,42 @@ function applyCats(){
 const NEWCAT = '<option value="__new__">+ Nieuwe categorie…</option>';
 
 // ---------- periods ----------
-function periodStartFor(d){
-  const L = Math.max(1, Math.min(28, Math.round(num(S.config.loondag)||25)));
-  const y=d.getFullYear(), m=d.getMonth();
-  return d.getDate() >= L ? new Date(y,m,L) : new Date(y,m-1,L);
+// Loondag op een werkdag (config.loondagVerschuiven): valt de loondag op een zaterdag, zondag of feestdag, dan begint de
+// loonperiode op de werkdag ervoor ("eerder", standaard) of erna ("later"); "niet" = altijd de ingestelde dag. Inkomsten
+// schuiven op dezelfde manier mee (occurrences). nom = de ingestelde, niet verschoven dag: daarop staan vaste sleutels
+// (afgevinkte betalingen), zodat die niet veranderen als de loondag een keer schuift.
+function loondagL(){ return Math.max(1, Math.min(28, Math.round(num(S.config.loondag)||25))); }
+function schuifMode(){ const v = S.config.loondagVerschuiven; return v==="later" || v==="niet" ? v : "eerder"; }
+const FEEST = new Map();
+function feestdagen(y){
+  if(FEEST.has(y)) return FEEST.get(y);
+  const a=y%19, b=Math.floor(y/100), c=y%100, d=Math.floor(b/4), e=b%4, f=Math.floor((b+8)/25), g=Math.floor((b-f+1)/3), h=(19*a+b-d-g+15)%30,
+        i=Math.floor(c/4), k=c%4, l=(32+2*e+2*i-h-k)%7, m=Math.floor((a+11*h+22*l)/451), mnd=Math.floor((h+l-7*m+114)/31), dag=((h+l-7*m+114)%31)+1;
+  const pasen = new Date(y, mnd-1, dag);
+  const koningsdag = new Date(y,3,27).getDay()===0 ? new Date(y,3,26) : new Date(y,3,27);
+  // Nieuwjaar, Goede Vrijdag, Tweede Paasdag, Koningsdag, Hemelvaart, Tweede Pinksterdag, beide Kerstdagen
+  const set = new Set([new Date(y,0,1), addDays(pasen,-2), addDays(pasen,1), koningsdag, addDays(pasen,39), addDays(pasen,50), new Date(y,11,25), new Date(y,11,26)].map(iso));
+  FEEST.set(y, set); return set;
 }
+function isWerkdag(d){ const w = d.getDay(); return w!==0 && w!==6 && !feestdagen(d.getFullYear()).has(iso(d)); }
+function naarWerkdag(d, mode){ if(mode==="niet") return d; let x = d; for(let i=0;i<10 && !isWerkdag(x);i++) x = addDays(x, mode==="later" ? 1 : -1); return x; }
+function loondagIn(y, m){ return naarWerkdag(new Date(y, m, loondagL()), schuifMode()); }
+// de loonperiode van nominale maand (y, m): van de (verschoven) loondag t/m de dag vóór de volgende
+function periodeVan(y, m){ return {start:loondagIn(y, m), end:addDays(loondagIn(y, m+1), -1), nom:new Date(y, m, loondagL())}; }
+function periodeNominaal(d){ const y=d.getFullYear(), m=d.getMonth(); for(const k of [1,0,-1,-2]){ const p = periodeVan(y, m+k); if(d>=p.start && d<=p.end) return p; } return periodeVan(y, m); }
+function periodStartFor(d){ return periodeNominaal(d).start; }
 function periodN(n){ // n=0 current
-  const s0 = periodStartFor(TODAY);
-  const s = new Date(s0.getFullYear(), s0.getMonth()+n, s0.getDate());
-  const e = addDays(new Date(s.getFullYear(), s.getMonth()+1, s.getDate()), -1);
-  return {start:s, end:e, n};
+  const p0 = periodeNominaal(TODAY), p = periodeVan(p0.nom.getFullYear(), p0.nom.getMonth()+n);
+  return {start:p.start, end:p.end, nom:p.nom, n};
 }
 function perName(p){ return MAANDEN[p.start.getMonth()]+"–"+MAANDEN[p.end.getMonth()]; }
 function occurrences(item, start, end){
+  // inkomsten schuiven mee met de loondag: valt de dag in het weekend of op een feestdag, dan de werkdag ervoor (of erna)
+  if(item && item.freq!=="week" && schuifMode()!=="niet" && S.inkomsten.includes(item))
+    return occurrencesNominaal(item, addDays(start,-7), addDays(end,7)).map(d=>naarWerkdag(d, schuifMode())).filter(d=>d>=start && d<=end);
+  return occurrencesNominaal(item, start, end);
+}
+function occurrencesNominaal(item, start, end){
   const out=[]; const eind = parseIso(item.einddatum); const begin = parseIso(item.startdatum);
   if(item.freq==="week"){
     const wd = item.weekdag==null?4:+item.weekdag;
@@ -871,8 +913,13 @@ function periodCalc(p){
 // datum. bron "plan": vooraf gereserveerd uit het plan-geld, verdeeld over `delen` loonperiodes die eindigen in de periode
 // van de datum. bron "vrij": telt in de periode van de datum mee als uitgegeven van het vrije budget.
 function periodIndex(d){ if(!d) return null; const p0=periodN(0); if(d<p0.start) return -1; for(let n=0;n<36;n++){ const p=periodN(n); if(d>=p.start && d<=p.end) return n; } return 99; }
+// De laatste dag waarvan er een afschrift is. Verwachte meevallers, geplande uitgaven en zelf ingevoerde uitgaven met een datum
+// t/m die dag tellen niet meer mee: wat er echt gebeurde, staat dan op het afschrift.
+let AFTOT = {src:null, val:null};
+function afschriftTot(){ if(AFTOT.src===S.afschriften) return AFTOT.val; let t = null; S.afschriften.forEach(a => { const d = parseIso(a.tot); if(d && (!t || d>t)) t = d; }); AFTOT = {src:S.afschriften, val:t}; return t; }
+function doorAfschrift(d){ const t = afschriftTot(); return !!(d && t && d<=t); }
 function geplandItems(extra){
-  return S.gepland.concat(extra||[]).map(g => { const d=parseIso(g.datum); return {g, d, n:periodIndex(d), k:Math.max(1,Math.round(num(g.delen))||1), bedrag:num(g.bedrag), bron:g.bron==="vrij"?"vrij":"plan"}; });
+  return S.gepland.filter(g => !doorAfschrift(parseIso(g.datum))).concat(extra||[]).map(g => { const d=parseIso(g.datum); return {g, d, n:periodIndex(d), k:Math.max(1,Math.round(num(g.delen))||1), bedrag:num(g.bedrag), bron:g.bron==="vrij"?"vrij":"plan"}; });
 }
 // ---------- inkomsten deze periode: zoals ze op het afschrift binnenkwamen ----------
 // A planned income counts as it arrived once the afschrift covers its date: by keyword, or else the unrecognised
@@ -888,7 +935,7 @@ function inkomenNu(){
   const cur = periodCalc(p);
   const van = af ? parseIso(af.van) : null, tot = af ? parseIso(af.tot) : null;
   const matched = new Map(), los = [];
-  if(af) (af.rows||[]).forEach(r => { const d = parseIso(r[0]); if(!d || d<p.start || d>p.end || !(r[2]>0)) return; const c = classify(r); if(c.type==="negeer") return;
+  if(af) (af.rows||[]).forEach(r => { const d = parseIso(r[0]); if(!d || d<p.start || d>p.end || !(r[2]>0)) return; const c = classify(r); if(c.type==="negeer" || c.type==="teruggave") return;
     if(c.type==="inkomst" && c.it) matched.set(c.it.id, (matched.get(c.it.id)||0) + r[2]); else los.push({r, d, b:r[2], it:null}); });
   // pair planned incomes without a keyword match with unrecognised bijschrijvingen, closest in size first
   const open = van ? cur.ink.filter(x => !matched.has(x.it.id) && x.d>=van && x.d<=tot) : [];
@@ -911,21 +958,22 @@ function inkomenNu(){
   const vrije = los.filter(l=>!l.it), mvBinnen = [];
   S.extras.filter(x=>x.richting==="in" && x.status==="verwacht").forEach(v => { const dl = parseIso(v.deadline), b = num(v.bedrag); if(!dl || dl>p.end || !(b>0)) return;
     const l = vrije.filter(l=>!l.mv && Math.abs(l.b-b) <= Math.max(1, b*0.05)).sort((x,y)=>Math.abs(x.b-b)-Math.abs(y.b-b))[0];
-    if(l){ l.mv = v; mvBinnen.push({v, rij:l.r, b:l.b}); } });
-  const alVerwacht = mvBinnen.reduce((s,x)=>s+x.b,0);
+    if(l){ l.mv = v; mvBinnen.push({v, rij:l.r, b:l.b, voorbij:doorAfschrift(dl)}); } });
+  // een meevaller waarvan de datum al op het afschrift valt, telt niet meer in het plan: dan telt de bijschrijving gewoon mee
+  const alVerwacht = mvBinnen.filter(x=>!x.voorbij).reduce((s,x)=>s+x.b,0);
   INK = {key, val:{p, I, Ipl:cur.I, kas:I-cur.I, meer:I-cur.I-alVerwacht, alVerwacht, mvBinnen, ink, extra, extraRows, af}};
   return INK.val;
 }
 
 // ---------- bank statements ----------
 const AUTO_CATS = [
-  ["Boodschappen",["albert heijn","ah to go"," ah ","jumbo","lidl","aldi","plus ","dirk","dekamarkt","vomar","coop","spar ","ekoplaza","picnic","crisp"]],
+  ["Boodschappen",["albert heijn","ah to go"," ah ","jumbo","lidl","aldi","plus ","dirk","dekamarkt","vomar"," coop ","spar ","ekoplaza","picnic","crisp"]],
   ["Horeca & bezorging",["thuisbezorgd","uber eats","deliveroo","mcdonald","burger king","kfc","domino","new york pizza","starbucks","cafe","restaurant","eetcafe","lunchroom"]],
   ["Vervoer",["ns groep","ns reizigers","ov-chipkaart","shell","bp ","esso","tinq","tango","total","q-park","parkeren","yellowbrick","parkmobile","gvb","ret ","u-ov","qbuzz","arriva","connexxion"]],
   ["Winkels & online",["bol.com","amazon","coolblue","action","hema","kruidvat","etos","ikea","zalando","primark","wehkamp","mediamarkt","blokker","intertoys","decathlon","gamma","praxis","karwei","hornbach"]],
   ["Zorg",["apotheek","tandarts","fysio","huisarts"]],
   ["Contant",["geldautomaat","geldmaat","opname"]],
-  ["Uitjes & vrije tijd",["pathe","vue ","kinepolis","efteling","dierenpark","blijdorp","artis","burgers","museum","tickets","ticketmaster","steam","playstation","nintendo","xbox"]],
+  ["Uitjes & vrije tijd",["bioscoop","pathe","vue ","kinepolis","efteling","dierenpark","blijdorp","artis","burgers","museum","tickets","ticketmaster","steam","playstation","nintendo","xbox"]],
   ["Kleding & verzorging",["kapper","h&m","c&a","zeeman","we fashion","jd sports","nike","adidas"]],
 ];
 function splitCsvLine(line, delim){
@@ -948,9 +996,10 @@ function parseBankCsv(text){
   const head = splitCsvLine(first, delim).map(h=>h.trim().toLowerCase());
   const col = (...names) => head.findIndex(h => names.some(n => h.includes(n)));
   const iD = col("datum","date"), iN = col("naam","omschrijving","description"), iB = col("bedrag","amount"),
-        iAB = col("af bij","af/bij","debit/credit"), iM = col("mededeling","omschrijving-1","notifications"), iT = col("tegenrekening","counterparty");
+        iAB = col("af bij","af/bij","debit/credit"), iM = col("mededeling","omschrijving-1","notifications"), iT = col("tegenrekening","counterparty"),
+        iS = col("saldo na mutatie","resulting balance","saldo");
   if(iD<0 || iB<0) throw new Error("Dit lijkt geen ING-export: ik vind geen kolommen 'Datum' en 'Bedrag (EUR)'.");
-  const rows=[];
+  const rows=[], saldoRegels=[];
   for(const line of lines.slice(1)){
     const c = splitCsvLine(line, delim);
     const rawD = (c[iD]||"").trim(); let d=null;
@@ -965,10 +1014,54 @@ function parseBankCsv(text){
     const naam = (iN>=0? c[iN] : "").trim().slice(0,70);
     const med = (iM>=0? c[iM] : "").trim().replace(/\s+/g," ").slice(0,90);
     rows.push([iso(d), naam, Math.round(b*100)/100, med, iT>=0 ? (c[iT]||"").trim().slice(-4) : ""]);
+    if(iS>=0){ let rs = (c[iS]||"").trim().replace(/\s/g,""); if(/,\d{1,2}$/.test(rs)) rs = rs.replace(/\./g,"").replace(",","."); const sv = parseFloat(rs);
+      if(isFinite(sv) && rs!=="") saldoRegels.push({d:iso(d), b:Math.round(b*100)/100, s:Math.round(sv*100)/100, i:saldoRegels.length}); }
   }
   if(!rows.length) throw new Error("Geen transacties gevonden in dit bestand.");
   rows.sort((a,b)=>a[0]<b[0]?-1:1);
-  return rows.slice(-1500);
+  const uit = rows.slice(-1500);
+  uit.saldi = saldiPerDag(saldoRegels);
+  return uit;
+}
+// Saldo aan het eind van elke dag uit de kolom "Saldo na mutatie" van de ING-CSV. De laatste boeking van een dag is de boeking
+// waarvan het saldo erna niet het saldo vóór een andere boeking van die dag is (saldoketen); lukt dat niet, dan de volgorde in
+// het bestand (ING zet de nieuwste boeking bovenaan).
+function saldiPerDag(lijst){
+  const out = {}; if(!lijst.length) return out;
+  const nieuwBoven = lijst[0].d >= lijst[lijst.length-1].d;
+  const perDag = new Map(); lijst.forEach(x => (perDag.get(x.d) || perDag.set(x.d, []).get(x.d)).push(x));
+  perDag.forEach((l, d) => {
+    let kand = l.filter(x => !l.some(o => o!==x && Math.abs((o.s - o.b) - x.s) < 0.005));
+    if(kand.length!==1) kand = l.slice().sort((a,b)=> nieuwBoven ? a.i-b.i : b.i-a.i);
+    out[d] = kand[0].s;
+  });
+  return out;
+}
+// het laatst bekende saldo volgens de afschriften (eind van de dag)
+function saldoVolgensAfschrift(){
+  let best = null;
+  S.afschriften.forEach(a => Object.entries(a.saldi||{}).forEach(([d, v]) => { if(!best || d > best.d) best = {d, saldo:num(v)}; }));
+  return best ? {datum:parseIso(best.d), saldo:best.saldo} : null;
+}
+// is het saldo uit het afschrift nieuwer dan het ingevulde saldo?
+function afschriftSaldoNieuwer(){
+  const sva = saldoVolgensAfschrift(); if(!sva || !sva.datum) return null;
+  const st = S.stand, D = st ? parseIso(st.datum) : null;
+  if(D && D > sva.datum) return null;
+  if(D && iso(D)===iso(sva.datum) && Math.abs(num(st.saldo)-sva.saldo)<0.005) return null;
+  return sva;
+}
+async function gebruikAfschriftSaldo(){
+  if(!A("ov.saldo")) return toast("Het saldo invullen staat voor jou uit.");
+  const sva = saldoVolgensAfschrift(); if(!sva) return toast("Er staat geen saldo in de afschriften.");
+  if(!db) return toast("Opslaan kan niet: geen verbinding met de opslag.");
+  // een creditcard die nog openstaat, blijft staan
+  const sdn = standNu(periodN(0)), ccOpen = sdn && (sdn.ccNu || sdn.ccPeriode || sdn.ccNaLoondag);
+  const D = sva.datum, eind = new Date(D.getFullYear(), D.getMonth(), D.getDate(), 23, 59, 59);
+  const data = {saldo: Math.round(sva.saldo*100)/100, creditcard: ccOpen ? Math.round(sdn.cc*100)/100 : 0, ccDatum: ccOpen && sdn.ccD && sdn.ccD>D ? iso(sdn.ccD) : "",
+    datum: iso(D), tijd: eind.toISOString(), door: PROFIELEN[WHO.profiel] || "", bron:"afschrift"};
+  try{ await db.doc("saldo/stand").set(data); S.stand = data; toast("Saldo uit het afschrift gebruikt"); const d=$("#sheet"); if(d && d.open) d.close(); render(); }
+  catch(e){ toast(e.code==="not_granted" ? "Je hebt alleen leesrechten op deze tool." : "Bewaren lukte niet: "+(e.message||e.code)); }
 }
 function keywordsOf(it){
   return String(it.zoekwoorden||"").toLowerCase().split(",").map(s=>s.trim()).filter(Boolean);
@@ -995,7 +1088,7 @@ function eigenStatus(){
     const seen = new Map(); let dekking = null;
     S.afschriften.forEach(a => {
       const t = parseIso(a.tot); if(t && (!dekking || t>dekking)) dekking = t;
-      (a.rows||[]).forEach(r => { const p = eigenPersoon(r, namen), d = parseIso(r[0]); if(!p || !d || !r[2]) return; const sig = rowSig(r); if(!seen.has(sig)) seen.set(sig, {r, sig, p, d, b:r[2]}); });
+      (a.rows||[]).forEach(r => { const p = eigenPersoon(r, namen), d = parseIso(r[0]); if(!p || !d || !r[2]) return; const sig = rowKey(r); if(!seen.has(sig)) seen.set(sig, {r, sig, p, d, b:r[2]}); });
     });
     // oudste eerst; op dezelfde dag eerst het hoogste bedrag, want dat is de storting en niet de terugstorting
     const list = [...seen.values()].sort((x,y) => (x.d-y.d) || (Math.abs(y.b)-Math.abs(x.b)));
@@ -1027,17 +1120,24 @@ function classify(row){
   // een zoekwoord met cijfers (IBAN, kenmerk) alleen letterlijk: genormaliseerd vallen de cijfers weg en past het overal op
   const hit = k => { if(!k) return false; if(txt.includes(k)) return true; const kn = /\d/.test(k) ? "" : normKey(k); return !!kn && txtN.includes(kn); };
   // a choice made for this one afschrijving ("Anders indelen") wins over every automatic rule
-  const ov = b<0 && S.herind ? S.herind.get(rowSig(row)) : null;
-  if(ov){
+  const ov = S.herind ? S.herind.get(rowKey(row)) : null;
+  if(ov && b<0){
     if(ov.soort==="negeer") return {type:"negeer", cat:"Eigen overboekingen", ov};
     if(ov.soort==="post"){ const it=S.posten.find(p=>p.id===ov.postId); if(it) return it.categorie==="Boodschappen" ? {type:"boodschappen", it, cat:"Boodschappen", ov} : {type:"post", it, cat:it.categorie||"Overig", ov}; }
     if(ov.soort==="var" && ov.categorie) return {type: ov.categorie==="Boodschappen"?"boodschappen":"var", cat:ov.categorie, ov};
     if(ov.soort==="plan"){ const it = planItemsAll().find(x=>x.kind===ov.planKind && x.src.id===ov.planId); if(it) return {type:"negeer", cat:"Terugbetalingen & sparen", plan:it, ov}; }
   }
+  // bijschrijvingen (tabje Bij): geld terug voor een soort, bij een inkomen, extra inkomen of niet meetellen
+  if(ov && b>0){
+    if(ov.soort==="negeer") return {type:"negeer", cat:"Telt niet mee", ov};
+    if(ov.soort==="terug" && ov.categorie) return {type:"teruggave", cat:ov.categorie, ov};
+    if(ov.soort==="ink"){ const it = S.inkomsten.find(i=>i.id===ov.inkId); if(it) return {type:"inkomst", it, cat:"Inkomsten", ov}; }
+    if(ov.soort==="bij") return {type:"bij", cat:"Overige bijschrijvingen", ov};
+  }
   // betaling uit het plan (terugbetaling of spaardoel), herkend aan een zoekwoord van dat doel
   { const pm = planMatch(row, hit); if(pm) return {type:"negeer", cat:"Terugbetalingen & sparen", plan:pm}; }
   // eigen rekeningen: teruggestorte overboekingen (beide kanten) niet meetellen, wel als ze na 3 dagen niet terug zijn
-  const eg = eigenStatus().get(rowSig(row));
+  const eg = eigenStatus().get(rowKey(row));
   if(eg){
     if(eg.status!=="niet terug") return {type:"negeer", cat:"Eigen rekeningen", eigen:eg};
     return b>0 ? {type:"bij", cat:"Van eigen rekening", eigen:eg} : {type:"var", cat:"Naar eigen rekening", eigen:eg};
@@ -1058,10 +1158,13 @@ function classify(row){
 function analyseAfschrift(a){
   const rows = a.rows||[];
   const res = {inTot:0, uitTot:0, cats:{}, posten:new Map(), boodschappen:0, variabel:0, varRows:[], van:parseIso(a.van), tot:parseIso(a.tot)};
-  res.inbox = []; res.negeer = []; res.catRows = {};
+  res.inbox = []; res.negeer = []; res.catRows = {}; res.terug = [];
   rows.forEach(r => {
     const c = classify(r); const b=r[2];
     if(c.type==="negeer"){ res.negeer.push(r); return; }
+    // geld terug (bijv. een retour of een Tikkie): verlaagt wat er bij die soort is uitgegeven, is geen inkomen
+    if(c.type==="teruggave"){ res.inTot+=b; res.terug.push(r); res.cats[c.cat]=(res.cats[c.cat]||0)-b; (res.catRows[c.cat] ||= []).push(r);
+      if(c.cat==="Boodschappen") res.boodschappen-=b; else { res.variabel-=b; res.varRows.push(r); } return; }
     if(b<0 && c.inbox) res.inbox.push(r);
     if(b>0) res.inTot+=b; else res.uitTot+=-b;
     if(b<0){
@@ -1094,9 +1197,20 @@ function normKey(s){
 // stable id for one afschrijving: date, amount and a hash of name + omschrijving (survives re-uploading the same CSV)
 function hashStr(s){ let h=5381; for(let i=0;i<s.length;i++) h=(((h<<5)+h)+s.charCodeAt(i))>>>0; return h.toString(36); }
 function rowSig(r){ return "r"+String(r[0]).replace(/-/g,"")+"_"+Math.round(Math.abs(r[2])*100)+(r[2]<0?"a":"b")+"_"+hashStr(String(r[1]||"")+"|"+String(r[3]||"")); }
-function findRow(sig){ for(const a of S.afschriften) for(const r of (a.rows||[])) if(rowSig(r)===sig) return {r, af:a}; return null; }
+// rowKey = rowSig, met "-2", "-3"… voor de tweede, derde identieke boeking in hetzelfde afschrift (zelfde dag, bedrag, naam en
+// omschrijving). Zo telt elke boeking mee en krijgt elke boeking een eigen keuze en notitie. rowSig blijft de sleutel voor het
+// samenvoegen van afschriften (groepeer, rijenSleutel). De eerste van een reeks houdt zijn oude sleutel: bestaande keuzes blijven gelden.
+const RK = new WeakMap();
+function rowKey(r){ return RK.get(r) || rowSig(r); }
+function nummerRegels(rows){ const n = new Map(); (rows||[]).forEach(r => { const sg = rowSig(r), k = (n.get(sg)||0)+1; n.set(sg, k); RK.set(r, k>1 ? sg+"-"+k : sg); }); }
+function findRow(sig){ for(const a of S.afschriften) for(const r of (a.rows||[])) if(rowKey(r)===sig) return {r, af:a}; return null; }
 // one tappable afschrijving line (opens "Anders indelen")
-function rowBtn(r, extra){ return `<button type="button" class="drow" data-herindeel="${esc(rowSig(r))}"><span>${dkort(parseIso(r[0]))} · ${esc(r[1]||"Onbekend")}${extra?` <span class="muted">${extra}</span>`:""}</span><b>${eur(-r[2])}</b></button>`; }
+function rowBtn(r, extra){ if(r[2]>0) return bijBtn(r, extra); return `<button type="button" class="drow" data-herindeel="${esc(rowKey(r))}"><span>${dkort(parseIso(r[0]))} · ${esc(r[1]||"Onbekend")}${extra?` <span class="muted">${extra}</span>`:""}</span><b>${eur(-r[2])}</b></button>`; }
+// een bijschrijving in een lijst (tik: anders indelen, tabje Bij)
+function bijBtn(r, extra, note){
+  const n = note || S.notities.get(rowKey(r)), c = classify(r), tag = c.type==="teruggave" ? `<span class="bijtag">geld terug</span>` : "";
+  return `<button type="button" class="drow" data-bij="${esc(rowKey(r))}"><span>${dkort(parseIso(r[0]))} · ${esc(r[1]||"Onbekend")}${extra?` <span class="muted">${extra}</span>`:""}${tag?" "+tag:""}${n&&n.tekst?`<span class="note">✎ ${esc(n.tekst)}</span>`:""}</span><b class="amt in">+${eur(r[2])}</b></button>`;
+}
 function keyFromRow(r){
   return normKey(r[1]||r[3]||"").split(" ").slice(0,3).join(" ").slice(0,28).trim();
 }
@@ -1120,7 +1234,7 @@ function geplandVsWerkelijk(an){
   an.posten.forEach(e => add(e.it.categorie||"Overig","werkelijk",e.som));
   add("Boodschappen","gepland",an.boodschappenBudget||0); add("Boodschappen","werkelijk",an.boodschappen);
   const dagen = daysBetween(an.van, an.tot)+1;
-  add("Vrij besteedbaar","gepland", num(S.config.vrijBudget)*dagen/(365/12));
+  add("Vrij besteedbaar","gepland", vrijBudgetCfg()*dagen/(365/12));
   add("Vrij besteedbaar","werkelijk", an.variabel);
   const list = Object.entries(rows).map(([c,v])=>({c, ...v, diff:v.werkelijk-v.gepland})).sort((a,b)=>b.gepland-a.gepland);
   return {list, gepland:list.reduce((s,x)=>s+x.gepland,0), werkelijk:list.reduce((s,x)=>s+x.werkelijk,0), dagen};
@@ -1180,11 +1294,11 @@ function spending(p){
   const an = af ? analyseAfschrift(af) : null;
   const viaAf = an ? an.variabel + Math.max(0, an.boodschappen - (an.boodschappenBudget||0)) : 0;
   const hand = S.uitgaven.filter(u=>{ const d=parseIso(u.datum); return d && d>=p.start && d<=p.end; })
-    .map(u=>Object.assign({}, u, {gedekt: matchesRow(u, af)})).sort((a,b)=>a.datum<b.datum?1:-1);
+    .map(u=>Object.assign({}, u, {gedekt: matchesRow(u, af) || doorAfschrift(parseIso(u.datum)), voorbij: !matchesRow(u, af) && doorAfschrift(parseIso(u.datum))})).sort((a,b)=>a.datum<b.datum?1:-1);
   const handOpen = hand.filter(u=>!u.gedekt).reduce((s,u)=>s+num(u.bedrag),0);
   // geplande uitgaven in deze periode tellen als uitgegeven tot ze op het afschrift staan (zelfde bedrag, ±5 dagen).
   // Bij bron "plan" gaat het bedrag van het plan-geld af (sparen), niet van het vrije budget (zie vrijUitgegeven).
-  const gvrij = S.gepland.filter(g=>{ const d=parseIso(g.datum); return d && d>=p.start && d<=p.end; })
+  const gvrij = S.gepland.filter(g=>{ const d=parseIso(g.datum); return d && d>=p.start && d<=p.end && !doorAfschrift(d); })
     .map(g=>Object.assign({}, g, {gedekt: g.status==="betaald" || (!!af && (af.rows||[]).some(r=>{ const d=parseIso(r[0]); return d>=p.start && d<=p.end && Math.abs(-r[2]-num(g.bedrag))<0.011; }))}));
   const gvrijOpen = gvrij.filter(g=>!g.gedekt).reduce((s,g)=>s+num(g.bedrag),0);
   return {af, an, viaAf, hand, handOpen, gvrij, gvrijOpen, totaal: viaAf + handOpen + gvrijOpen};
@@ -1194,7 +1308,7 @@ function detailPerSoort(sp){
   const cats = {};
   const get = c => cats[c] ||= {c, som:0, rows:[]};
   if(sp.af){
-    (sp.af.rows||[]).forEach(r => { if(r[2]>=0) return; const k=classify(r); if(k.type==="negeer") return;
+    (sp.af.rows||[]).forEach(r => { if(!r[2]) return; const k=classify(r); if(k.type==="negeer" || (r[2]>0 && k.type!=="teruggave")) return;
       const g=get(k.cat); g.som+=-r[2]; g.rows.push({d:r[0], naam:r[1]||"Onbekend", b:-r[2], meta:r[3]||"", r, k}); });
   }
   sp.hand.filter(u=>!u.gedekt).forEach(u => { const g=get(u.categorie||"Overig"); g.som+=num(u.bedrag); g.rows.push({d:u.datum, naam:u.naam, b:num(u.bedrag), meta:"zelf ingevoerd", uid:u.id}); });
@@ -1215,7 +1329,7 @@ function detailPerSoort(sp){
     // per afschrijving: was this one expected, and for the right amount? (only where a plan exists: vaste lasten)
     g.rows.forEach(x => {
       x.flag = null;
-      if(refT!=="gepland" || g.c==="Boodschappen") return;
+      if(refT!=="gepland" || g.c==="Boodschappen" || x.b<0) return;
       if(x.k && x.k.type==="post" && x.k.it){ const exp=num(x.k.it.bedrag); if(x.b-exp>0.5){ x.flag="hoger"; x.exp=exp; x.extra=x.b-exp; } }
       else x.flag="onverwacht";
     });
@@ -1229,8 +1343,9 @@ function detailPerSoort(sp){
 }
 // one afschrijving in the detail list, with a mark when it was higher than the vaste last or not expected, and its note
 function detRowBtn(x){
-  const r=x.r, sig=rowSig(r), note=S.notities.get(sig);
+  const r=x.r, sig=rowKey(r), note=S.notities.get(sig);
   const naamIt = x.k && x.k.it ? x.k.it.naam : "";
+  if(r[2]>0) return bijBtn(r, "", note);   // geld terug: tik om de bijschrijving anders in te delen
   const tag = x.flag==="hoger" ? `<span class="tag bad">+${eur(x.extra)} t.o.v. ${eur(x.exp)}</span>`
     : x.flag==="onverwacht" ? `<span class="tag warn">niet verwacht</span>` : "";
   const sub = x.k && x.k.geleerd ? esc((x.k.geleerd.label ? x.k.geleerd.label+" · " : "")+"geleerd") : naamIt && naamIt!==r[1] ? esc(naamIt) : esc(String(x.meta).slice(0,40));
@@ -1261,7 +1376,8 @@ function render(){ if(rq) return; rq=true; requestAnimationFrame(()=>{ rq=false;
 function doRender(){
   PG.key = null;   // betalingen uit het plan op het afschrift opnieuw zoeken (indelingen kunnen veranderd zijn)
   const p0 = periodN(0);
-  $("#perLabel").textContent = dkort(p0.start)+" – "+dkort(p0.end)+" · loondag de "+(S.config.loondag||25)+"e"; { const pt=$("#pgTitle"); if(pt) pt.textContent = ({overzicht:"Overzicht", tijdlijn:"Tijdlijn", lasten:"Vaste lasten", plan:"Plan & doelen", afschrift:"Afschrift", beheer:"Beheer"})[S.tab]||"Overzicht"; }
+  { const L = loondagL(), vl = periodN(1).start, sch = vl.getDate()!==L || vl.getMonth()!==periodN(1).nom.getMonth();
+    $("#perLabel").textContent = dkort(p0.start)+" – "+dkort(p0.end)+" · loondag de "+L+"e"+(sch ? " (deze keer "+DAGEN[vl.getDay()]+" "+vl.getDate()+"e)" : ""); } { const pt=$("#pgTitle"); if(pt) pt.textContent = ({overzicht:"Overzicht", tijdlijn:"Tijdlijn", lasten:"Vaste lasten", plan:"Plan & doelen", afschrift:"Afschrift", beheer:"Beheer"})[S.tab]||"Overzicht"; }
   // toegang: nog niet bekend, geen toegang, of beheer
   const gate = gateHtml();
   document.body.classList.toggle("gated", !!gate || S.tab==="beheer"); document.body.classList.remove("tl");
@@ -1342,7 +1458,7 @@ function geldstroom(plan, cur){
   const vast = cur.uit.filter(x=>!isSparenPost(x.it)), sparen = cur.uit.filter(x=>isSparenPost(x.it));
   const V = vast.reduce((s,x)=>s+x.bedrag,0), Vb = vast.filter(x=>x.d<=TODAY).reduce((s,x)=>s+x.bedrag,0);
   const SP = sparen.reduce((s,x)=>s+x.bedrag,0);
-  const I = inn.I, U = sp.totaal, vrijB = plan.gl ? plan.gl.vrijCfg : Math.max(0, num(S.config.vrijBudget));
+  const I = inn.I, U = sp.totaal, vrijB = plan.gl ? plan.gl.vrijCfg : vrijBudgetCfg();
   const naUit = I - V - SP - U;
   const vrijRest = Math.max(0, vrijB - U);
   // walk from today to loondag: does every bill still fit in what is left?
@@ -1386,7 +1502,7 @@ function standNu(p){
   const gedekt = d => dekking.some(x => d>=x[0] && d<=x[1]);
   // 1. echte boekingen na dag D (elke boeking één keer, ook als afschriften elkaar overlappen)
   const rows = [], seen = new Set();
-  if(dagen>0) S.afschriften.forEach(a => (a.rows||[]).forEach(r => { const d = parseIso(r[0]); if(!d || d<van || d>TODAY) return; const sig = rowSig(r); if(seen.has(sig)) return; seen.add(sig); rows.push(r); }));
+  if(dagen>0) S.afschriften.forEach(a => (a.rows||[]).forEach(r => { const d = parseIso(r[0]); if(!d || d<van || d>TODAY) return; const sig = rowKey(r); if(seen.has(sig)) return; seen.add(sig); rows.push(r); }));
   // creditcard op het afschrift?
   let ccRow = null;
   if(cc>0 && rows.length){
@@ -1422,11 +1538,12 @@ function standNu(p){
   const verwacht = vw.in - vw.vast - vw.los - vw.gepl - vw.plan - vw.cc;
   const saldo = Math.round((saldo0 + af.in - af.uit + verwacht)*100)/100;
   return {saldo, saldo0, D, dagen, af, vw, verwacht, geschat: vw.dagen>0, cc, ccD, ccNu, ccPeriode, ccNaLoondag, ccAf, ccAfD,
-    start: saldo - (ccNu ? cc : 0), tijd: st.tijd, door: st.door};
+    start: saldo - (ccNu ? cc : 0), tijd: st.tijd, door: st.door, bron: st.bron||""};
 }
 // korte tekst bij het saldo: wanneer ingevuld en of het sindsdien is doorgerekend
 function standTekst(sd){
   const tijd = sd.tijd ? new Date(sd.tijd) : null, hhmm = tijd && !isNaN(tijd) ? String(tijd.getHours()).padStart(2,"0")+":"+String(tijd.getMinutes()).padStart(2,"0") : "";
+  if(sd.bron==="afschrift") return `uit het afschrift (eind van ${dkort(sd.D)}${sd.door?", gekozen door "+esc(sd.door):""})${sd.dagen ? `, doorgerekend tot vandaag${sd.geschat ? (sd.af.n ? " met het afschrift en wat verwacht werd" : " met wat verwacht werd") : " met het afschrift"}` : ""}`;
   if(!sd.dagen) return `ingevuld${sd.door?" door "+esc(sd.door):""}${hhmm?" om "+hhmm:""}`;
   return `ingevuld op ${dkort(sd.D)}${sd.door?" door "+esc(sd.door):""} (${eur(sd.saldo0)}), doorgerekend tot vandaag${sd.geschat ? (sd.af.n ? " met het afschrift en wat verwacht werd" : " met wat verwacht werd") : " met het afschrift"}`;
 }
@@ -1509,6 +1626,8 @@ function bindTijdlijn(){
     // de hele dag komt net boven de balk te staan: de balk toont dan de stand aan het eind van die dag (= het punt in de grafiek)
     const reduce = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches;
     window.scrollTo({top: Math.max(0, row.endTop - tlLijn() + 2), behavior: reduce ? "auto" : "smooth"}); };
+  // openklappen van "Al geweest" verschuift de lijst: opnieuw meten
+  app.querySelectorAll('details[data-det="tl:al"]').forEach(d => d.addEventListener("toggle", () => requestAnimationFrame(tlMeet)));
   requestAnimationFrame(tlMeet);
 }
 window.addEventListener("scroll", ()=>{ if(S.tab==="tijdlijn") tlScroll(); }, {passive:true});
@@ -1532,7 +1651,7 @@ function betaalDatum(src, p, deadline){
 }
 
 // ---------- afvinken: planbetaling/<sleutel> ----------
-const pbKey = (kind, id, p) => (kind==="doel"?"d":"x")+"_"+id+"_"+iso(p.start).replace(/-/g,"");
+const pbKey = (kind, id, p) => (kind==="doel"?"d":"x")+"_"+id+"_"+iso(p.nom||p.start).replace(/-/g,"");   // op de ingestelde loondag: blijft gelijk als de loondag schuift
 function pbRecord(kind, id, p){ return (S.planbet||[]).find(r=>r.id===pbKey(kind,id,p)) || null; }
 function planItemsAll(){ return S.extras.filter(x=>x.richting!=="in").map(x=>({kind:"extra", src:x})).concat(S.doelen.map(x=>({kind:"doel", src:x}))); }
 
@@ -1553,9 +1672,9 @@ function planGevonden(){
   if(PG.key && PG.key.every((v,i)=>v===key[i])) return PG.val;
   const m = new Map(), seen = new Set();
   S.afschriften.forEach(a => (a.rows||[]).forEach(r => {
-    if(!(r[2]<0)) return; const sig = rowSig(r); if(seen.has(sig)) return; seen.add(sig);
+    if(!(r[2]<0)) return; const sig = rowKey(r); if(seen.has(sig)) return; seen.add(sig);
     const c = classify(r); if(!c.plan) return; const d = parseIso(r[0]); if(!d) return;
-    const k = pbKey(c.plan.kind, c.plan.src.id, {start:periodStartFor(d)});
+    const k = pbKey(c.plan.kind, c.plan.src.id, periodeNominaal(d));
     const e = m.get(k) || m.set(k, {som:0, rows:[]}).get(k); e.som += -r[2]; e.rows.push(r);
   }));
   PG = {key, val:m}; return m;
@@ -1594,7 +1713,7 @@ function buildPlan(opts){
   opts = opts || {};
   const pins = [opts.pin0||null, opts.pin1||null], vast = [!!opts.vast0, !!opts.vast1], res = [opts.res0||null, opts.res1||null];
   const items = planBasis();
-  const vrijCfg = Math.max(0, num(S.config.vrijBudget));
+  const vrijCfg = vrijBudgetCfg();
   const inn = inkomenNu();
   const gAll = geplandItems(opts.extraGepland);
   const months = []; let carry = 0;
@@ -1603,7 +1722,7 @@ function buildPlan(opts){
   for(let n=0;n<36;n++){
     const pc = periodCalc(periodN(n)), p = pc.p;
     let extraIn = 0;
-    S.extras.filter(x=>x.richting==="in" && x.status==="verwacht").forEach(x => { const dl = parseIso(x.deadline); if(dl ? (dl>=p.start && dl<=p.end) || (n===0 && dl<p.start) : n===1) extraIn += num(x.bedrag); });
+    S.extras.filter(x=>x.richting==="in" && x.status==="verwacht").forEach(x => { const dl = parseIso(x.deadline); if(dl && doorAfschrift(dl)) return; if(dl ? (dl>=p.start && dl<=p.end) || (n===0 && dl<p.start) : n===1) extraIn += num(x.bedrag); });
     const I = pc.I + (n===0 ? inn.meer : 0), SP = pc.sparen, Vrek = pc.V - SP;
     const geplVrij = gAll.filter(x=>x.bron==="vrij" && x.n===n && x.g.status!=="betaald").reduce((s,x)=>s+x.bedrag,0);
     if(n===1 && vast[0]) carry = 0;                                    // volgt deze periode de geldlijn, dan rekent die ook het echte tekort door
@@ -1690,7 +1809,7 @@ function geldlijn(o){
   const ix = d => daysBetween(TODAY, d);
   const inn = inkomenNu(), cur = periodCalc(p0), pc1 = periodCalc(p1), sd = standNu(p0);
   const sp = o.sp || spending(p0), vu = vrijUitgegeven(sp);
-  const vrijCfg = Math.max(0, num(S.config.vrijBudget));
+  const vrijCfg = vrijBudgetCfg(), R = roodLimiet(), M = ondergrens();
   const itemById = new Map((o.items||[]).map(it=>[it.id, it]));
   const E = [];
   const push = e => { e.i = ix(e.d); if(e.i<0 || e.i>=N) return null; E.push(e); return e; };
@@ -1722,7 +1841,7 @@ function geldlijn(o){
   }));
   // geplande uitgaven na vandaag: van het vrije budget (3) of van plan-geld (4)
   const gedekt = new Set(sp.gvrij.filter(x=>x.gedekt).map(x=>x.id)), nuMk = [];
-  S.gepland.forEach(g => { const d = parseIso(g.datum), b = num(g.bedrag); if(!d || g.status==="betaald" || gedekt.has(g.id) || !(b>0)) return;
+  S.gepland.forEach(g => { const d = parseIso(g.datum), b = num(g.bedrag); if(!d || g.status==="betaald" || gedekt.has(g.id) || !(b>0) || doorAfschrift(d)) return;
     if(d<=TODAY){ if(d>=p0.start) nuMk.push({d, naam:g.naam, bedrag:b, soort:"gepl", mark:true, edit:"gepland:"+g.id, perm:"pl.meevallers", sub:`gepland op ${dkort(d)}, nog niet als betaald gemarkeerd. Staat hij op de rekening, zet hem dan op Betaald.`}); return; }
     push({d, lvl: g.bron==="vrij" ? 3 : 4, soort:"gepl", naam:g.naam, wens:b, bron:g.bron, gid:g.id, sub: g.bron==="vrij" ? "geplande uitgave · vrij budget" : "geplande aankoop · plan-geld", edit:"gepland:"+g.id, perm:"pl.meevallers"}); });
   // 4 automatisch sparen (vaste lasten in categorie Sparen)
@@ -1740,7 +1859,7 @@ function geldlijn(o){
   if(sd) start = sd.start;
   else {
     const besl = o.dec0 || new Map(); let planAl = 0; besl.forEach(v=>{ planAl += v.x; });
-    const geplAl = S.gepland.filter(g => { const d=parseIso(g.datum); return d && d>=p0.start && d<=TODAY && !(g.bron==="vrij" && gedekt.has(g.id)); }).reduce((s,g)=>s+num(g.bedrag),0);
+    const geplAl = S.gepland.filter(g => { const d=parseIso(g.datum); return d && d>=p0.start && d<=TODAY && !doorAfschrift(d) && !(g.bron==="vrij" && gedekt.has(g.id)); }).reduce((s,g)=>s+num(g.bedrag),0);
     start = inn.ink.filter(x=>x.d<=TODAY).reduce((s,x)=>s+x.bedrag,0) + inn.extra - cur.uit.filter(x=>x.d<=TODAY).reduce((s,x)=>s+x.bedrag,0) - vu.U + vu.geplVoorbij - planAl - geplAl;
   }
   // inkomsten en rekeningen vast; daarna per voorrang wat er nog past
@@ -1748,17 +1867,24 @@ function geldlijn(o){
   E.filter(e=>e.lvl<=1).forEach(e => { e.x = e.lvl===0 ? e.amt : e.wens; delta[e.i] += e.lvl===0 ? e.amt : -e.wens; });
   for(let k=0;k<N;k++){ run += delta[k]; B[k] = run; }
   const minVanaf = t => { let m = Infinity; for(let k=t;k<N;k++) if(B[k]<m) m = B[k]; return m===Infinity ? 0 : m; };
-  const capBills = Math.max(0, minVanaf(0)), tekortRek = Math.max(0, -minVanaf(0));
+  // roodstand (R): rekeningen mogen tot −R zakken; pas daaronder is er een echt tekort. Marge (M): terugbetalen, vrij besteden
+  // en sparen laten minstens M staan. Met R = 0 en M = 0 rekent alles zoals vóór 13 nov.
+  const laag0 = minVanaf(0);
+  const capBills = Math.max(0, laag0 - M), capRood = Math.max(0, laag0 + R), tekortRek = Math.max(0, -R - laag0);
+  const roodRek = R>0 && tekortRek<0.005 ? Math.max(0, Math.min(R, -laag0)) : 0;
+  const margeTekort = M>0 ? Math.max(0, M - laag0) : 0;
+  let margeDag = null; if(margeTekort>0.5){ if(start < M-0.005) margeDag = TODAY; else for(let k=0;k<N;k++) if(B[k] < M-0.005){ margeDag = addDays(TODAY,k); break; } }
   // laagste stand als alleen inkomsten en rekeningen meetellen; tekort per periode (samen = tekortRek)
   const laagIn = (a, b) => { let v = Infinity, i = a; for(let k=a;k<=b && k<N;k++) if(B[k]<v){ v = B[k]; i = k; } return v===Infinity ? {v:start, i:a, d:addDays(TODAY,a)} : {v, i, d:addDays(TODAY,i)}; };
   const i0e = ix(p0.end), laagRek = laagIn(0, N-1), laagRek0 = laagIn(0, i0e), laagRek1 = laagIn(i0e+1, N-1);
-  const tekort0 = Math.max(0, -laagRek0.v), tekort1 = i0e+1<N ? Math.max(0, -laagRek1.v - tekort0) : 0;
-  const zet = e => { const cap = Math.max(0, Math.floor(minVanaf(e.i)*100+1e-6)/100); e.x = Math.round(Math.min(e.wens, cap)*100)/100;
+  const tekort0 = Math.max(0, -R - laagRek0.v), tekort1 = i0e+1<N ? Math.max(0, -R - laagRek1.v - tekort0) : 0;
+  const rood0 = R>0 ? Math.max(0, Math.min(R, -laagRek0.v)) : 0, rood1 = R>0 && i0e+1<N ? Math.max(0, Math.min(R, -laagRek1.v)) : 0;
+  const zet = e => { const cap = Math.max(0, Math.floor((minVanaf(e.i) - M)*100+1e-6)/100); e.x = Math.round(Math.min(e.wens, cap)*100)/100;
     if(e.x>0) for(let k=e.i;k<N;k++) B[k] -= e.x; e.status = e.x >= e.wens-0.005 ? "ok" : e.x>0.005 ? "deels" : "niet"; };
   const L = l => E.filter(e=>e.lvl===l);
   L(1.5).forEach(zet);
   L(2).sort((a,b)=>(a.prio-b.prio)||(a.i-b.i)).forEach(zet);
-  const capTerug = Math.max(0, minVanaf(0));
+  const capTerug = Math.max(0, minVanaf(0) - M);
   L(2.5).forEach(zet);
   L(3).sort((a,b)=>(a.i-b.i)||((a.soort==="kandit"?0:a.soort==="gepl"?1:2)-(b.soort==="kandit"?0:b.soort==="gepl"?1:2))).forEach(zet);
   const p4 = e => e.soort==="gepl" ? 0 : e.soort==="sparen" ? 1 : 10+(e.prio||3);
@@ -1770,7 +1896,8 @@ function geldlijn(o){
   for(let i=0;i<N;i++){
     const ev = []; let vrijX = 0, vrijW = 0;
     while(k<E.length && E[k].i===i){ const e = E[k++]; const amt = e.lvl===0 ? e.amt : -e.x; s += amt; e.na = s;
-      if(e.lvl===1 && s < -0.5) e.risico = Math.min(e.wens, -s);
+      if(e.lvl===1 && s < -R-0.5) e.risico = Math.min(e.wens, -R - s);
+      else if(e.lvl===1 && s < -0.5) e.rood = Math.min(e.wens, -s);
       if(e.stil){ vrijX += e.x; vrijW += e.wens; } else ev.push(e); }
     if(s < laag.v-0.005) laag = {v:s, i};
     if(!onder && s < -0.5) onder = {i, v:s};
@@ -1785,7 +1912,7 @@ function geldlijn(o){
     const plan = ev.filter(e=>e.plan);
     return {
       inkomsten: som(e=>e.lvl===0, "amt"),
-      rek: {wens: som(e=>e.lvl===1, "wens"), risico: ev.filter(e=>e.risico>0.5), tekort: n===0 ? tekort0 : tekort1, laag: n===0 ? laagRek0 : laagRek1},
+      rek: {wens: som(e=>e.lvl===1, "wens"), risico: ev.filter(e=>e.risico>0.5), tekort: n===0 ? tekort0 : tekort1, rood: n===0 ? rood0 : rood1, laag: n===0 ? laagRek0 : laagRek1},
       terug: {wens: som(e=>e.lvl===2, "wens"), x: som(e=>e.lvl===2, "x"), ev: ev.filter(e=>e.lvl===2)},
       vrij: {budget: n===0 ? rest0 : rest1, x: som(e=>e.stil, "x"), wens: som(e=>e.stil, "wens"), vanaf: (days.find(d=>d.p===n && d.vrijX>0.005)||{}).d || null,
         gepl: ev.filter(e=>e.lvl===3 && e.soort==="gepl")},
@@ -1794,7 +1921,9 @@ function geldlijn(o){
       eind: days[n===0 ? i0end : N-1].s
     };
   });
-  return {start, sd, schatting:!sd, p0, p1, eind, N, E, days, per, nuMk, ccNa, capBills, capTerug, tekortRek, laagRek, laag, onder,
+  // wat er na alles (en de marge) tot het einde van de tijdlijn over blijft: kan nu naar de spaarrekening (stand "sparen")
+  const overSparen = Math.max(0, Math.floor((Math.min(...days.map(x=>x.s)) - M)*100)/100);
+  return {start, sd, schatting:!sd, p0, p1, eind, N, E, days, per, nuMk, ccNa, capBills, capTerug, capRood, tekortRek, roodRek, margeTekort, margeDag, R, M, overSparen, laagRek, laag, onder,
     vrijCfg, U:vu.U, vu, rest0, rest1, dagen0, dagen1, firstRisk: E.find(e=>e.risico>0.5) || null};
 }
 
@@ -1865,12 +1994,17 @@ function oordeel(gl){
   const t0 = gl.per[0], t1 = gl.per[1], eindD = dkort(gl.eind);
   if(gl.tekortRek>0.5){ const lr = gl.laagRek, niks = !gl.E.some(e=>e.lvl>=2 && e.soort!=="kandit" && e.x>0.005);
     return {cls:"bad", t:`Rekeningen komen ${eur0(gl.tekortRek)} tekort`, s:`${gl.start<-0.5 ? `De rekening staat nu al rood. ` : ""}Op ${dkort(lr.d)} staat hij op het laagst: ${eur(lr.v)}. ${niks ? `Tot ${eindD} gaat er daarom niets naar terugbetalingen, vrij besteden of sparen.` : `Tot dan gaat er niets naar terugbetalingen, vrij besteden of sparen.`}`}; }
+  if(gl.roodRek>0.5){ const lr = gl.laagRek;
+    return {cls:"warn", t:`Rekening gaat ${eur0(gl.roodRek)} rood`, s:`Op ${dkort(lr.d)} staat hij op het laagst: ${eur(lr.v)}. Dat past binnen de roodstand van ${eur0(gl.R)}, maar rood staan kost rente. Tot dan gaat er niets naar terugbetalingen, vrij besteden of sparen.`}; }
+  if(gl.margeTekort>0.5){ const lr = gl.laagRek;
+    return {cls:"warn", t:`Onder de marge van ${eur0(gl.M)}`, s:`Op ${dkort(lr.d)} staat de rekening op ${eur(lr.v)}. Vul hem aan: ${eur0(Math.ceil(gl.margeTekort/10)*10)} vóór ${dkort(gl.margeDag||lr.d)}.`}; }
   const terug = t0.terug.ev.concat(t1.terug.ev).filter(e=>e.status!=="ok");
   if(terug.length) return {cls:"warn", t:"Terugbetalen lukt niet helemaal", s: terug.slice(0,3).map(e=>`${esc(e.naam)}: ${eur0(e.x)} van ${eur0(e.wens)} op ${dkort(e.d)}`).join(". ")+". De rekeningen gaan voor."};
-  if(t0.vrij.x < t0.vrij.budget-0.5) return {cls:"warn", t:"Minder vrij te besteden", s:`Van het budget is ${eur0(t0.vrij.budget)} over, maar er past ${eur0(t0.vrij.x)}. De rest is nodig voor rekeningen en terugbetalingen.`};
+  if(!restNaarSparen() && t0.vrij.x < t0.vrij.budget-0.5) return {cls:"warn", t:"Minder vrij te besteden", s:`Van het budget is ${eur0(t0.vrij.budget)} over, maar er past ${eur0(t0.vrij.x)}. De rest is nodig voor rekeningen en terugbetalingen.`};
   const spaar = t0.sparen.ev.concat(t1.sparen.ev).filter(e=>e.status!=="ok");
   if(spaar.length) return {cls:"warn", t:"Sparen lukt niet helemaal", s: spaar.slice(0,3).map(e=>`${esc(e.naam)}: ${eur0(e.x)} van ${eur0(e.wens)}`).join(". ")+`. Tot ${eindD} gaan rekeningen, terugbetalingen en vrij besteden voor.`};
-  if(gl.vrijCfg>0.5 && gl.U > gl.vrijCfg+0.5) return {cls:"warn", t:"Vrij budget is op", s:`${eur0(gl.U)} uitgegeven van ${eur0(gl.vrijCfg)}. Rekeningen, terugbetalingen en sparen passen nog tot ${eindD}; wat je nu nog uitgeeft, gaat van het sparen af.`};
+  if(!restNaarSparen() && gl.vrijCfg>0.5 && gl.U > gl.vrijCfg+0.5) return {cls:"warn", t:"Vrij budget is op", s:`${eur0(gl.U)} uitgegeven van ${eur0(gl.vrijCfg)}. Rekeningen, terugbetalingen en sparen passen nog tot ${eindD}; wat je nu nog uitgeeft, gaat van het sparen af.`};
+  if(restNaarSparen()) return {cls:"good", t:"Alles past", s:`Rekeningen, terugbetalingen en sparen tot ${eindD}. Wat overblijft, kan naar de spaarrekening.`};
   return {cls:"good", t:"Alles past", s:`Rekeningen, terugbetalingen, vrij besteden en sparen tot ${eindD}.`};
 }
 
@@ -1879,7 +2013,11 @@ function teDoen(plan, cur){
   const gl = plan.gl, p0 = gl.p0, loondag = addDays(p0.end,1), inn = inkomenNu(), todo = [], genoemd = new Set();
   const dagenTot = daysBetween(TODAY, loondag);
   if(gl.tekortRek>0.5){ const lr = gl.laagRek, rood = gl.start<-0.5, o = gl.onder;
-    todo.push({cls:"bad", d: rood || !o ? TODAY : o.d || addDays(TODAY, o.i), t:`Er is ${eur0(gl.tekortRek)} extra nodig voor de rekeningen`, s:`${rood ? `De rekening staat nu al rood (${eur(gl.start)}). ` : o ? `Vanaf ${dkort(addDays(TODAY, o.i))} staat de rekening rood. ` : ""}Op het laagste punt, ${dkort(lr.d)}, is het ${eur(lr.v)} (gerekend tot ${dkort(gl.eind)}). Spaarsaldo: ${eur0(num(S.config.spaarsaldo))}.`}); }
+    todo.push({cls:"bad", d: rood || !o ? TODAY : o.d || addDays(TODAY, o.i), t:`Er is ${eur0(gl.tekortRek)} extra nodig voor de rekeningen`, s:`${rood ? `De rekening staat nu al rood (${eur(gl.start)}). ` : o ? `Vanaf ${dkort(addDays(TODAY, o.i))} staat de rekening rood. ` : ""}Op het laagste punt, ${dkort(lr.d)}, is het ${eur(lr.v)} (gerekend tot ${dkort(gl.eind)})${gl.R>0.5 ? `, dieper dan de roodstand van ${eur0(gl.R)}` : ""}. Spaarsaldo: ${eur0(num(S.config.spaarsaldo))}.`}); }
+  else if(gl.roodRek>0.5){ const lr = gl.laagRek, o = gl.onder, dag = o ? addDays(TODAY, o.i) : TODAY, nodig = Math.ceil((gl.roodRek + gl.M)/10)*10;
+    todo.push({cls:"warn", d:dag, t:`Vul de rekening aan: ${eur0(nodig)} vóór ${dkort(dag)}`, s:`${gl.start<-0.5 ? `De rekening staat nu al rood (${eur(gl.start)}). ` : `Vanaf ${dkort(dag)} staat de rekening rood. `}Op ${dkort(lr.d)} het laagst: ${eur(lr.v)}. Dat past binnen de roodstand van ${eur0(gl.R)}, maar kost rente.${gl.M>0.5 ? ` Inclusief de marge van ${eur0(gl.M)}.` : ""}`}); }
+  else if(gl.margeTekort>0.5){ const lr = gl.laagRek, dag = gl.margeDag || lr.d;
+    todo.push({cls:"warn", d:dag, t:`Vul de rekening aan: ${eur0(Math.ceil(gl.margeTekort/10)*10)} vóór ${dkort(dag)}`, s:`Op ${dkort(lr.d)} staat hij op ${eur(lr.v)}, onder de marge van ${eur0(gl.M)}. Tot dan gaat er minder naar terugbetalingen, vrij besteden en sparen.`}); }
   // betalingen uit het plan: overgemaakt? en wat niet (helemaal) lukt, deze en volgende periode
   gl.E.filter(e => e.plan || ((e.soort==="sparen"||e.soort==="gepl") && e.lvl>=3)).forEach(e => {
     if(e.plan){ S.pbInfo = S.pbInfo || new Map(); S.pbInfo.set(e.plan.key, pbInfo(e)); }
@@ -1896,7 +2034,8 @@ function teDoen(plan, cur){
     todo.push({cls:"info", d:TODAY, betaling:key, gevonden:true, t:`${it.src.naam}: ${eur(v.x)} gevonden op het afschrift`, s:`${v.found.rows.map(r=>dkort(parseIso(r[0]))+" "+esc(String(r[1]).split(" ").slice(0,3).join(" "))+" "+eur(-r[2])).join(", ")}. Het telt al mee; met Bijwerken staat het ook bij ${it.kind==="doel"?"al gespaard":"al afgelost"}.`, html: A("pl.doelen") ? `<div class="pbrow"><button type="button" class="btn sm" data-pb="bevestig:${esc(key)}">Bijwerken</button></div>` : ""}); }));
   // vrij besteden tot loondag
   const v = gl.per[0].vrij;
-  if(gl.U > gl.vrijCfg+0.5) todo.push({cls:"warn", d:TODAY, t:`Vrij budget op tot ${dkort(p0.end)}`, s:`${eur0(gl.U)} uitgegeven van ${eur0(gl.vrijCfg)}. Wat je nu nog uitgeeft, gaat af van het geld voor ${gl.tekortRek>0.5 ? "de rekeningen" : "sparen en daarna terugbetalingen"}.`, go:Z("af.soort")&&inn.af?"goaf:soort":""});
+  if(restNaarSparen()){ if(gl.overSparen>=10 && dagenTot<=5) todo.push({cls:"good", d:TODAY, t:`Zet ${eur0(Math.floor(gl.overSparen/10)*10)} over naar de spaarrekening`, s:`Dit blijft na rekeningen, terugbetalingen en sparen tot ${dkort(gl.eind)} over${gl.M>0.5 ? `, met de marge van ${eur0(gl.M)} erbij` : ""}. Loondag is over ${dagenTot} ${dagenTot===1?"dag":"dagen"}.`}); }
+  else if(gl.U > gl.vrijCfg+0.5) todo.push({cls:"warn", d:TODAY, t:`Vrij budget op tot ${dkort(p0.end)}`, s:`${eur0(gl.U)} uitgegeven van ${eur0(gl.vrijCfg)}. Wat je nu nog uitgeeft, gaat af van het geld voor ${gl.tekortRek>0.5 ? "de rekeningen" : "sparen en daarna terugbetalingen"}.`, go:Z("af.soort")&&inn.af?"goaf:soort":""});
   else if(v.x<0.5 && v.budget>0.5) todo.push({cls:"warn", geel:true, d:TODAY, t:`Geen ruimte om vrij te besteden tot ${dkort(p0.end)}`, s:`Van het budget is nog ${eur0(v.budget)} over, maar het geld is nodig voor rekeningen en terugbetalingen.`});
   else if(v.x < v.budget-0.5) todo.push({cls:"warn", geel:true, d:TODAY, t:`Nog maar ${eur0(v.x)} vrij te besteden`, s:`Van het budget is ${eur0(v.budget)} over; de rest is nodig voor rekeningen en terugbetalingen.${v.vanaf && v.vanaf>TODAY ? ` Pas vanaf ${dkort(v.vanaf)}.` : ""}`});
   else if(v.x>0.5) todo.push({cls:"good", d:TODAY, t:`Nog ${eur0(v.x)} vrij te besteden`, s:`${eur(v.x/Math.max(1,dagenTot))} per dag tot loondag (${dkort(loondag)}).`});
@@ -1924,9 +2063,15 @@ function renderOverzicht(plan, cur){
   const vd = oordeel(gl), v = t0.vrij, sd = gl.sd;
   const magSaldo = A("ov.saldo");
   const saldoRegel = !Z("ov.saldo") ? "" : sd
-    ? `<div class="sal3"><span>Op de rekening <b class="${sd.saldo<-0.5?"neg":""}">${eur(sd.saldo)}</b>${sd.ccNu?` − creditcard <b>${eur(sd.cc)}</b>`:""}<small>${standTekst(sd)}</small></span>${magSaldo?`<button type="button" class="sumbtn" data-saldo>Aanpassen</button>`:""}</div>`
+    ? `<div class="sal3"><span>Op de rekening <b class="${sd.saldo<-0.5?"neg":""}">${eur(sd.saldo)}</b>${sd.ccNu?` − creditcard <b>${eur(sd.cc)}</b>`:""}<small>${standTekst(sd)}${magSaldo && afschriftSaldoNieuwer() ? " · nieuwer saldo in het afschrift" : ""}</small></span>${magSaldo?`<button type="button" class="sumbtn" data-saldo>Aanpassen</button>`:""}</div>`
     : `<div class="sal3 oud"><span>Nog geen saldo ingevuld. Gerekend met een schatting: <b>${eur(gl.start)}</b></span>${magSaldo?`<button type="button" class="sumbtn" data-saldo>Saldo invullen</button>`:""}</div>`;
-  const hero = `<section class="hero3" aria-label="Vrij te besteden">
+  const hero = restNaarSparen() ? `<section class="hero3" aria-label="Kan naar de spaarrekening">
+    <div class="h3top"><span class="lbl3">Kan nu naar de spaarrekening</span><span class="pill3">nog ${dagenTot} ${dagenTot===1?"dag":"dagen"}</span></div>
+    <div class="big3">${eur0(gl.overSparen)}</div>
+    <div class="eq3">Wat er na rekeningen, terugbetalingen en sparen tot ${dkort(gl.eind)} overblijft${gl.M>0.5 ? `, met de marge van <b>${eur0(gl.M)}</b>` : ""}. Al uitgegeven aan losse uitgaven: <b>${eur0(gl.U)}</b></div>
+    ${saldoRegel}
+    <div class="vd3 ${vd.cls}">${v3status(vd.cls)}<div><b>${vd.t}</b><small>${vd.s}</small></div></div>
+  </section>` : `<section class="hero3" aria-label="Vrij te besteden">
     <div class="h3top"><span class="lbl3">Vrij te besteden tot ${dkort(p0.end)}</span><span class="pill3">nog ${dagenTot} ${dagenTot===1?"dag":"dagen"}</span></div>
     <div class="big3">${eur0(v.x)}</div>
     <div class="eq3">${v.x>0.5 ? `${eur(v.x/Math.max(1,dagenTot))} per dag${v.vanaf && v.vanaf>TODAY ? ` · pas vanaf ${dkort(v.vanaf)}` : ""} · ` : ""}budget <b>${eur0(gl.vrijCfg)}</b>, al uitgegeven <b>${eur0(gl.U)}</b></div>
@@ -1966,16 +2111,17 @@ function ladderKaart(gl, n, plan, g){
   const rij = (nr, titel, bedrag, sub, chip, frac, body, k) => `<details class="pr3" data-det="${key+k}" ${isOpen(key+k)?"open":""}><summary><span class="nr">${nr}</span><div class="grow"><div class="pt"><span>${titel}</span><b>${bedrag}</b></div><div class="pbar ${chip.includes("chip3 bad")?"bad":chip.includes("chip3 warn")?"warn":""}"><i style="width:${Math.max(0,Math.min(100,frac*100)).toFixed(1)}%"></i></div><div class="ps"><span>${sub}</span>${chip}</div></div><span class="chev">${ICO3.down}</span></summary><div class="pbody">${body}</div></details>`;
   const rekEv = gl.E.filter(e=>e.lvl===1 && (n===0 ? e.i<=daysBetween(TODAY,gl.p0.end) : e.i>daysBetween(TODAY,gl.p0.end)));
   const rekTekort = t.rek.tekort, lr = t.rek.laag;
-  const rekBody = `${rekTekort>0.5 ? `<p class="hint">Met alleen inkomsten en rekeningen staat de rekening op ${dkort(lr.d)} op ${eur(lr.v)}${n===1 && gl.per[0].rek.tekort>0.5 ? `, ook als het tekort van deze maand (${eur0(gl.per[0].rek.tekort)}) is aangevuld` : ""}. Er is ${eur0(rekTekort)} extra nodig om niet rood te staan.</p>` : ""}<div class="rows">${rekEv.map(e=>`<div class="row ${e.risico?"risk":""}"><span class="d">${dkort(e.d)}</span><span class="n">${esc(e.naam)}${e.risico?`<small class="flagtxt">in gevaar: ${eur0(e.risico)} tekort</small>`:""}</span><span class="a">${eur(e.wens)}</span></div>`).join("") || `<p class="hint">Geen rekeningen meer${n===0?" tot loondag":""}.</p>`}</div>`;
+  const rekBody = `${rekTekort>0.5 ? `<p class="hint">Met alleen inkomsten en rekeningen staat de rekening op ${dkort(lr.d)} op ${eur(lr.v)}${n===1 && gl.per[0].rek.tekort>0.5 ? `, ook als het tekort van deze maand (${eur0(gl.per[0].rek.tekort)}) is aangevuld` : ""}. Er is ${eur0(rekTekort)} extra nodig om niet rood te staan.</p>` : ""}<div class="rows">${rekEv.map(e=>`<div class="row ${e.risico?"risk":""}"><span class="d">${dkort(e.d)}</span><span class="n">${esc(e.naam)}${e.risico?`<small class="flagtxt">in gevaar: ${eur0(e.risico)} tekort</small>`:e.rood?`<small class="wtxt">in de roodstand: ${eur0(e.rood)}</small>`:""}</span><span class="a">${eur(e.wens)}</span></div>`).join("") || `<p class="hint">Geen rekeningen meer${n===0?" tot loondag":""}.</p>`}</div>`;
   const vrijBody = n===0 && g ? `<p class="hint">Budget ${eur0(gl.vrijCfg)} per maand, al uitgegeven ${eur0(gl.U)}${gl.vu.hand>0.5?` (waarvan ${eur0(gl.vu.hand)} zelf ingevoerd)`:""}. Wat er past, staat hier; de rest is nodig voor rekeningen en terugbetalingen.</p><div class="rows">${g.topSoort.slice(0,6).map(([c,v])=>`<div class="row"><span class="n">${esc(c)}</span><span class="a">${eur(v)}</span></div>`).join("")}</div>${plan.sp.hand.length ? `<div class="rows" data-perm="ov.vrij">${plan.sp.hand.map(u=>`<button type="button" class="row" data-edit="uitgaven:${esc(u.id)}"><span class="d">${dkort(parseIso(u.datum))}</span><span class="n">${esc(u.naam)}<small>zelf ingevoerd${u.gedekt?" · staat op afschrift":""}</small></span><span class="a">${eur(num(u.bedrag))}</span></button>`).join("")}</div>`:""}`
     : `<p class="hint">Budget ${eur0(gl.vrijCfg)}${t.vrij.gepl.length?`, waarvan ${eur0(t.vrij.gepl.reduce((s,e)=>s+e.wens,0))} gepland`:""}.</p>`;
   const vrijB = t.vrij.budget + t.vrij.gepl.reduce((s,e)=>s+e.wens,0), vrijX = t.vrij.x + t.vrij.gepl.reduce((s,e)=>s+e.x,0);
   const vrijOp = n===0 && vrijB<0.5 && gl.vrijCfg>0.5 && gl.U>=gl.vrijCfg-0.5;
   return `<section class="card c3"><div class="h3row"><h2>${n===0?`Wie krijgt het geld tot ${dkort(gl.p0.end)}`:"Wie krijgt het geld"}</h2><span class="sub3">in deze volgorde</span></div>
     <div class="ladder">
-    ${rij(1, "Rekeningen", eur0(t.rek.wens), rekTekort>0.5 ? `${eur0(rekTekort)} tekort` : "gaan altijd voor", rekTekort>0.5 ? v3chip("bad","Tekort") : v3chip("good","Gedekt"), t.rek.wens ? Math.max(0, 1-rekTekort/t.rek.wens) : 1, rekBody, "r")}
+    ${rij(1, "Rekeningen", eur0(t.rek.wens), rekTekort>0.5 ? `${eur0(rekTekort)} tekort` : t.rek.rood>0.5 ? `gaat ${eur0(t.rek.rood)} rood (roodstand)` : "gaan altijd voor", rekTekort>0.5 ? v3chip("bad","Tekort") : t.rek.rood>0.5 ? v3chip("warn","Rood") : v3chip("good","Gedekt"), t.rek.wens ? Math.max(0, 1-rekTekort/t.rek.wens) : 1, rekBody, "r")}
     ${rij(2, "Terugbetalingen", t.terug.wens>0.5 ? `${eur0(t.terug.x)} <small>van ${eur0(t.terug.wens)}</small>` : eur0(0), t.terug.wens>0.5 ? "volgens het plan" : "niets gepland", statusChip(t.terug.x, t.terug.wens), t.terug.wens>0.5 ? t.terug.x/t.terug.wens : 1, `<div class="rows">${t.terug.ev.map(planRij).join("") || `<p class="hint">Geen terugbetalingen in deze periode.</p>`}</div>`, "t")}
-    ${vrijOp ? rij(3, "Vrij besteden", eur0(0), `budget op: ${eur0(gl.U)} uitgegeven van ${eur0(gl.vrijCfg)}`, v3chip("warn","Op"), 0, vrijBody, "v")
+    ${restNaarSparen() ? rij(3, "Vrij besteden", eur0(0), "uit: wat overblijft gaat naar sparen", v3chip("good","—"), 1, `<p class="hint">In Budgetinstellingen staat "Wat er overblijft" op sparen. Er is geen vrij budget; losse uitgaven gaan af van wat er naar de spaarrekening kan${n===0 ? ` (nu ${eur0(gl.overSparen)})` : ""}.</p>`, "v")
+      : vrijOp ? rij(3, "Vrij besteden", eur0(0), `budget op: ${eur0(gl.U)} uitgegeven van ${eur0(gl.vrijCfg)}`, v3chip("warn","Op"), 0, vrijBody, "v")
       : rij(3, "Vrij besteden", vrijB>0.5 ? `${eur0(vrijX)} <small>van ${eur0(vrijB)}</small>` : eur0(0), n===0 ? (vrijX>0.5 ? `${eur(vrijX/Math.max(1,gl.dagen0))} per dag` : "geen ruimte") : `${eur0(gl.vrijCfg)} per maand`, statusChip(vrijX, vrijB), vrijB>0.5 ? vrijX/vrijB : 1, vrijBody, "v")}
     ${rij(4, "Sparen", t.sparen.wens>0.5 ? `${eur0(t.sparen.x)} <small>van ${eur0(t.sparen.wens)}</small>` : eur0(0), t.sparen.wens>0.5 ? "automatisch, geplande aankopen en spaardoelen" : "niets gepland", statusChip(t.sparen.x, t.sparen.wens), t.sparen.wens>0.5 ? t.sparen.x/t.sparen.wens : 1, `<div class="rows">${t.sparen.ev.map(planRij).join("") || `<p class="hint">Niets om te sparen in deze periode.</p>`}</div>`, "s")}
     </div>
@@ -1990,7 +2136,7 @@ function komtKaart(gl, cur, plan){
   const nRek = ev.filter(e=>e.lvl===1).length, nRisk = ev.filter(e=>e.risico>0.5).length, nNiet = ev.filter(e=>e.lvl>=2 && e.status && e.status!=="ok").length;
   const rij = e => {
     if(e.lvl===0) return `<div class="row"><span class="d">${dkort(e.d)}</span><span class="n">${esc(e.naam)}<small>${esc(e.sub)}</small></span><span class="a in">+${eur(e.amt)}</span></div>`;
-    if(e.lvl===1) return `<div class="row ${e.risico?"risk":""}"><span class="d">${dkort(e.d)}</span><span class="n">${esc(e.naam)}<small>${e.risico ? "in gevaar: "+eur0(e.risico)+" tekort" : e.cc ? "creditcard · gedekt" : "gedekt"}</small></span><span class="a">−${eur(e.wens)}</span></div>`;
+    if(e.lvl===1) return `<div class="row ${e.risico?"risk":""}"><span class="d">${dkort(e.d)}</span><span class="n">${esc(e.naam)}<small>${e.risico ? "in gevaar: "+eur0(e.risico)+" tekort" : e.rood ? "in de roodstand: "+eur0(e.rood) : e.cc ? "creditcard · gedekt" : "gedekt"}</small></span><span class="a">−${eur(e.wens)}</span></div>`;
     return planRij(e);
   };
   return `<section class="card c3" id="komt"><div class="h3row"><h2>Komt eraan tot loondag</h2><span class="sub3">${dkort(loondag)}</span></div>
@@ -2121,8 +2267,12 @@ function runCheck(){
     const minder = verschil(gl2, e=>e.lvl===2);
     lvl = "bad"; titel = "Kan, maar dan lukt een terugbetaling niet";
     uitleg = `De rekeningen blijven gedekt, maar ${minder.length ? minder.slice(0,3).map(z=>`${z.e.naam} krijgt op ${dkort(z.e.d)} ${eur0(z.x2)} in plaats van ${eur0(z.e.x)}`).join(", ") : "er gaat minder naar terugbetalingen"}. Ook sparen en vrij besteden schieten erbij in.`;
+  } else if(gl.R>0.5 && bedrag <= gl.capRood + 0.005){
+    const gl2 = geldlijnMet(plan, {bedrag, lvl:1, naam: naam||cat}), lr = gl2.laagRek;
+    lvl = "bad"; titel = "Kan alleen door rood te staan";
+    uitleg = `Dan staat de rekening op ${dkort(lr.d)} op ${eur(lr.v)}: binnen de roodstand van ${eur0(gl.R)}, maar rood staan kost rente. Tot dan gaat er niets naar terugbetalingen, vrij besteden of sparen.`;
   } else {
-    lvl = "bad"; titel = "Nee, dat past niet";
+    lvl = "bad"; titel = gl.R>0.5 ? "Nee, ook niet met roodstand" : "Nee, dat past niet";
     uitleg = gl.tekortRek>0.5 ? `De rekeningen tot ${dkort(gl.eind)} zijn nu al niet gedekt (${eur0(gl.tekortRek)} tekort). Dit kan alleen uit het spaargeld (${eur0(num(S.config.spaarsaldo))}).` : `Dan kunnen rekeningen tot ${dkort(gl.eind)} niet meer betaald worden: ${eur0(bedrag - gl.capBills)} tekort. Dit kan alleen uit het spaargeld (${eur0(num(S.config.spaarsaldo))}).`;
   }
   const vs = lvl==="good" ? [] : voorstellenKanDit(bedrag, naam || cat, cat, plan);
@@ -2179,15 +2329,15 @@ function renderPlan(plan){
     ${cols.some(c=>c.tekortIn>0.5 && c.n>=2) ? `<tr><td>Eerst tekort aanvullen</td>${cols.map((c,i)=>`<td class="${i<2||c.tekortIn<0.5?"zero":"neg"}">${i<2||c.tekortIn<0.5?"–":eur0(c.tekortIn)}</td>`).join("")}</tr>` : ""}
     <tr><td><b>Vrij over</b></td>${cols.map((c,i)=>i<2 ? `<td class="zero">–</td>` : `<td>${eur0(c.over)}</td>`).join("")}</tr>
     </tbody></table></div>
-    <p class="hint">Elke kolom loopt van loondag tot loondag. De eerste twee kolommen tonen wat er volgens de tijdlijn echt kan (met het saldo van vandaag); daarna rekent het plan met inkomsten − rekeningen${m2 && m2.tekortIn>0.5 ? `, en gaat in ${perName(m2.p)} eerst ${eur0(m2.tekortIn)} naar het tekort waarmee de rekening dan volgens de tijdlijn in de min staat` : ""}. "Vrij besteden" is wat er van het budget van ${eur0(num(S.config.vrijBudget))} past (in de eerste kolom: wat er nog over is); "Vrij over" komt daar bovenop.</p>`;
+    <p class="hint">Elke kolom loopt van loondag tot loondag. De eerste twee kolommen tonen wat er volgens de tijdlijn echt kan (met het saldo van vandaag); daarna rekent het plan met inkomsten − rekeningen${m2 && m2.tekortIn>0.5 ? `, en gaat in ${perName(m2.p)} eerst ${eur0(m2.tekortIn)} naar het tekort waarmee de rekening dan volgens de tijdlijn in de min staat` : ""}. "Vrij besteden" is wat er van het budget van ${eur0(vrijBudgetCfg())} past (in de eerste kolom: wat er nog over is); "Vrij over" komt daar bovenop.</p>`;
   const geplInfo = new Map((plan.gepl||[]).map(x=>[x.g.id, x]));
   const verwRows = [
-    ...verkoop.map(v=>({d:parseIso(v.deadline), html:`<button class="item" data-edit="extras:${esc(v.id)}"><div class="grow"><div class="name">${esc(v.naam)}</div><div class="meta">Inkomsten · ${v.status==="ontvangen"?"ontvangen":"verwacht"}${v.deadline?" · "+dkort(parseIso(v.deadline)):" · volgende periode"}${v.notitie?" · "+esc(v.notitie):""}</div></div><div class="amt in">+${eur(num(v.bedrag))}</div></button>`})),
+    ...verkoop.map(v=>({d:parseIso(v.deadline), html:`<button class="item" data-edit="extras:${esc(v.id)}"><div class="grow"><div class="name">${esc(v.naam)}</div><div class="meta">Inkomsten · ${v.status==="ontvangen"?"ontvangen":"verwacht"}${v.deadline?" · "+dkort(parseIso(v.deadline)):" · volgende periode"}${v.status==="verwacht" && doorAfschrift(parseIso(v.deadline)) ? ` · <span class="flagtxt">voorbij, telt niet meer mee</span>` : ""}${v.notitie?" · "+esc(v.notitie):""}</div></div><div class="amt in">+${eur(num(v.bedrag))}</div></button>`})),
     ...S.gepland.map(g=>{ const d=parseIso(g.datum), x=geplInfo.get(g.id), n=periodIndex(d), k=Math.max(1,Math.round(num(g.delen))||1);
-      const voorbij = n===-1, bron = g.bron==="vrij" ? "van vrij budget" : (k>1 ? `van plan-geld, ${k}× ${eur0(num(g.bedrag)/k)} opzij` : "van plan-geld");
+      const voorbij = n===-1 || (g.status!=="betaald" && doorAfschrift(d)), bron = g.bron==="vrij" ? "van vrij budget" : (k>1 ? `van plan-geld, ${k}× ${eur0(num(g.bedrag)/k)} opzij` : "van plan-geld");
       const krap = x && x.tekort>0.5 ? ` · <span class="flagtxt">${eur0(x.tekort)} niet te reserveren</span>` : "";
       const e = plan.gl.E.find(z=>z.gid===g.id), past = e && e.status!=="ok" ? ` · <span class="flagtxt">${e.status==="niet"?"past niet op de rekening":"maar "+eur0(e.x)+" past"}</span>` : "";
-      return {d, html:`<button class="item" data-edit="gepland:${esc(g.id)}"><div class="grow"><div class="name">${esc(g.naam)}</div><div class="meta">Uitgave · ${d?dkort(d)+" "+d.getFullYear():"geen datum"} · ${bron}${g.status==="betaald"?" · betaald":""}${voorbij?" · voorbij":""}${krap}${past}</div></div><div class="amt">−${eur(num(g.bedrag))}</div></button>`}; })
+      return {d, html:`<button class="item" data-edit="gepland:${esc(g.id)}"><div class="grow"><div class="name">${esc(g.naam)}</div><div class="meta">Uitgave · ${d?dkort(d)+" "+d.getFullYear():"geen datum"} · ${bron}${g.status==="betaald"?" · betaald":""}${voorbij?" · voorbij, telt niet meer mee":""}${krap}${past}</div></div><div class="amt">−${eur(num(g.bedrag))}</div></button>`}; })
   ].sort((a,b)=>(a.d||new Date(9999,0))-(b.d||new Date(9999,0)));
   const meev = `${A("pl.meevallers")?`<div class="btnrow"><button class="btn sm" data-verwacht>+ Verwacht</button></div>`:""}<div class="list">${verwRows.map(r=>r.html).join("")}</div>
     <p class="hint">Inkomsten tellen mee in de periode waarin ze binnenkomen; zet de status op "ontvangen" als het geld binnen is. Een geplande aankoop van plan-geld wordt vooraf gereserveerd en gaat op zijn datum van de rekening, na rekeningen, terugbetalingen en vrij besteden. Een aankoop van het vrije budget telt mee in het vrije budget van die maand.</p>`;
@@ -2266,7 +2416,7 @@ function renderTijdlijn(plan, cur){
     const sub = e.mark ? e.sub : e.lvl===2 ? `terugbetalen · betaaldag de ${betaaldag(e.plan.it.src)}e` : e.soort==="doel" ? `naar de spaarrekening · betaaldag de ${betaaldag(e.plan.it.src)}e` : e.sub;
     const pt = e.na!=null && !e.mark ? ` data-tlp="${evVals.push({s:e.na, q, naam})-1}"` : "";
     const blok = e.lvl>=2 && !e.mark ? (anoniem ? (e.status!=="ok" ? `<div class="geel">${v3status("warn")}<div><b>Een betaling uit het plan lukt ${e.status==="niet"?"niet":"maar deels"}</b><small>${eur(e.x)} van ${eur(e.wens)}.</small></div></div>` : "") : pbKnoppen(e, true)) : "";
-    return `<div class="tl-evw"><${tag} class="tl-ev${e.risico?" risk":""}${e.mark?" mk":""}" ${attr}${pt}><i class="tl-dot${ring}" style="--c:${TL_KLEUR[e.soort]||"var(--muted)"}"></i><span class="tl-n">${esc(naam)}${e.chip?` ${v3chip(e.chip[0], e.chip[1])}`:""}<small>${esc(anoniem ? "uit het plan" : (sub||""))}${e.risico?`<em> · in gevaar: ${eur0(e.risico)} tekort</em>`:""}</small>${e.meld && zm ? `<small class="tl-sub-ml ${e.meld.cls}">${esc(e.meld.t)}</small>` : ""}</span>${bedrag}</${ctag}>${blok}</div>`;
+    return `<div class="tl-evw"><${tag} class="tl-ev${e.risico?" risk":""}${e.mark?" mk":""}" ${attr}${pt}><i class="tl-dot${ring}" style="--c:${TL_KLEUR[e.soort]||"var(--muted)"}"></i><span class="tl-n">${esc(naam)}${e.chip?` ${v3chip(e.chip[0], e.chip[1])}`:""}<small>${esc(anoniem ? "uit het plan" : (sub||""))}${e.risico?`<em> · in gevaar: ${eur0(e.risico)} tekort</em>`:e.rood?`<em> · in de roodstand: ${eur0(e.rood)}</em>`:""}</small>${e.meld && zm ? `<small class="tl-sub-ml ${e.meld.cls}">${esc(e.meld.t)}</small>` : ""}</span>${bedrag}</${ctag}>${blok}</div>`;
   };
   const vrijTxt = x => x.vrijW<0.005 ? "" : x.vrijX >= x.vrijW-0.005 ? `vrij besteden −${eur(x.vrijX)}` : x.vrijX>0.005 ? `vrij besteden −${eur(x.vrijX)} (van ${eur(x.vrijW)})` : `vrij besteden: geen ruimte`;
   const balHtml = (x, leeg) => `<div class="tl-bal">${leeg?"":`<span class="tl-bl">eind van de dag</span>`}<b class="${x.s<-0.5?"neg":""}">${eur(x.s)}</b></div>`;
@@ -2327,7 +2477,20 @@ function renderTijdlijn(plan, cur){
     <p>Als het krap wordt, gaat het in deze volgorde: <b>1 rekeningen</b>, <b>2 terugbetalingen</b>, <b>3 vrij besteden</b>, <b>4 sparen</b>. Een betaling gaat alleen af als alles met meer voorrang, ook later tot ${dkort(t.eind)}, nog betaald kan worden. Lukt dat niet, dan staat er een geel blok met wat er wel kan (soms €0).</p>
     <p>Is de betaaldag voorbij, dan vraagt de tool "overgemaakt?". Zolang jullie dat niet invullen, houdt hij het geld apart.</p>
     <p>Tik op een regel om de vaste last, het inkomen, het doel of de geplande uitgave te openen. Tik op de grafiek om naar een dag te springen.</p></div></details>`;
-  return `${head}${nuCard}<section class="tl-list" aria-label="Tijdlijn per dag">${rows}</section><div class="tl-end" id="tlEnd"></div>${daarna}${uitleg}`;
+  // Al geweest: de boekingen van deze loonperiode die al op het afschrift staan (de tijdlijn rekent vanaf vandaag)
+  const alR = [], alSeen = new Set();
+  S.afschriften.forEach(a => (a.rows||[]).forEach(r => { const d = parseIso(r[0]); if(!d || d<t.p0.start || d>TODAY) return; const k = rowKey(r); if(alSeen.has(k)) return; alSeen.add(k); alR.push(r); }));
+  alR.sort((a,b)=> a[0]<b[0]?-1 : a[0]>b[0]?1 : a[2]-b[2]);
+  let alGeweest = "";
+  if(alR.length){
+    const uitS = alR.filter(r=>r[2]<0).reduce((s,r)=>s-r[2],0), inS = alR.filter(r=>r[2]>0).reduce((s,r)=>s+r[2],0), tot = afschriftTot();
+    const toon = hasMore("tlal") ? alR : alR.slice(-30);
+    let vd = ""; const regels = toon.map(r => { const kop = r[0]!==vd ? (vd = r[0], `<div class="alg-d">${DAGEN[parseIso(r[0]).getDay()]} ${dkort(parseIso(r[0]))}</div>`) : "";
+      return kop+`<div class="kv"><span>${esc(r[1]||"Onbekend")}</span><b class="${r[2]>0?"amt in":""}">${r[2]>0?"+":"−"}${eur(Math.abs(r[2]))}</b></div>`; }).join("");
+    alGeweest = accCard("tl:al", "Al geweest", `${alR.length} boeking${alR.length===1?"":"en"} sinds ${dkort(t.p0.start)} · −${eur0(uitS)} · +${eur0(inS)}${tot ? ` · afschrift t/m ${dkort(tot)}` : ""}`,
+      `${alR.length>toon.length ? `<p class="hint" style="margin:0 0 4px">De laatste ${toon.length} van ${alR.length}.</p>` : ""}<div class="detrows" style="border:0;padding-left:0;margin:0">${regels}</div>${moreBtn("tlal", alR.length, 30)}<p class="hint">Deze boekingen zitten al in het saldo van nu; de tijdlijn hieronder begint vandaag.</p>`);
+  }
+  return `${head}${alGeweest}${nuCard}<section class="tl-list" aria-label="Tijdlijn per dag">${rows}</section><div class="tl-end" id="tlEnd"></div>${daarna}${uitleg}`;
 }
 
 function emptyAll(){
@@ -2430,7 +2593,7 @@ function periodeEindIso(d){ const s = periodStartFor(d); return iso(addDays(new 
 // ---- alle signalen, met score (hoe hoger, hoe belangrijker) ----
 function adviezen(B, scope){
   const L = [], plan = B.plan;
-  const spaar = num(S.config.spaarsaldo), buf = num(S.config.buffer||1000), vrijCfg = num(S.config.vrijBudget);
+  const spaar = num(S.config.spaarsaldo), buf = num(S.config.buffer||1000), vrijCfg = vrijBudgetCfg();
   const tekortItem = plan.items.find(i=>i.status==="laat") || plan.items.find(i=>i.status==="nooit");
   const naam1 = tekortItem ? tekortItem.naam : null;
   const voeg = a => L.push(a);
@@ -2440,10 +2603,10 @@ function adviezen(B, scope){
     // rekeningen komen tekort (één potje: de geldlijn)
     if(gl.tekortRek>0.5){ const lr = gl.laagRek, som = gl.tekortRek;
       voeg({td:true, score:5000, lvl:"bad", titel:`Er is ${eur0(som)} extra nodig voor de rekeningen`,
-        waarom:`${gl.start<-0.5 ? "De rekening staat nu al rood. " : ""}Op ${dkort(lr.d)} staat hij op het laagst: ${eur(lr.v)}. Tot dan gaat er niets naar terugbetalingen, vrij besteden of sparen.`,
+        waarom:`${gl.start < -roodLimiet()-0.5 ? (roodLimiet()>0.5 ? "De rekening staat nu al verder rood dan de roodstand die jullie mogen gebruiken. " : "De rekening staat nu al rood. ") : ""}Op ${dkort(lr.d)} staat hij op het laagst: ${eur(lr.v)}. Tot dan gaat er niets naar terugbetalingen, vrij besteden of sparen.`,
         doen: spaar>=som ? `Zet ${eur0(som)} over van de spaarrekening (nu ${eur0(spaar)}), vóór ${dkort(lr.d)}.` : `De spaarrekening (${eur0(spaar)}) is niet genoeg: stel uitgaven uit of vraag uitstel bij een rekening die voor ${dkort(lr.d)} afgaat.`}); }
     // vrij budget op
-    if(gl.U > gl.vrijCfg+0.5){
+    if(!restNaarSparen() && gl.U > gl.vrijCfg+0.5){
       const mis = gl.per[0].problemen.concat(gl.per[1].problemen).filter(e=>e.plan).slice(0,3);
       voeg({td:true, score:900 + (gl.U-gl.vrijCfg)/10, lvl:"warn", titel:`Geen losse uitgaven meer tot ${dkort(B.loondag)}`,
         waarom:`${eur0(gl.U)} uitgegeven van een budget van ${eur0(gl.vrijCfg)}. Wat er nu nog uitgaat, gaat af van ${gl.tekortRek>0.5 ? "het geld voor de rekeningen" : "sparen en daarna terugbetalingen"}.`,
@@ -2542,13 +2705,13 @@ function adviezen(B, scope){
       const LOS = ["Horeca & bezorging","Uitjes & vrije tijd","Winkels & online","Elektronica","Kleding & verzorging","Gaming","Cadeaus","Huis & tuin","Contant"];
       const som = {}; an.varRows.forEach(r=>{ const c = classify(r).cat; if(LOS.includes(c)) som[c] = (som[c]||0) - r[2]; });
       const groot = Object.entries(som).sort((a,b)=>b[1]-a[1])[0];
-      if(groot && groot[1] > vrijCfg*0.25){ const helft = groot[1]/2, s = advSim(B, {vrijMinder:helft});
+      if(groot && vrijCfg>0.5 && groot[1] > vrijCfg*0.25){ const helft = groot[1]/2, s = advSim(B, {vrijMinder:helft});
         voeg({score:100 + groot[1]/5, lvl:"info", titel:`${groot[0]}: ${eur0(groot[1])} in ${dagen} dagen`,
           waarom:`Dat is ${Math.round(groot[1]/Math.max(1,vrijCfg)*100)}% van het vrije budget voor een hele maand (${eur0(vrijCfg)}).`,
           doen:`Geven jullie hier voortaan de helft aan uit, dan houden jullie ongeveer ${eur0(helft)} per maand over voor het plan.`, effect: advEffect(plan, s).filter(e=>e.goed).slice(0,2), goaf:"soort", focus:"ps:"+groot[0]}); }
     }
     // terugkerende kleine uitgaven bij dezelfde partij
-    const partij = new Map(); an.varRows.forEach(r=>{ const k = normKey(String(r[1]||"").split(/\s+/).slice(0,2).join(" ")) || "onbekend"; const e = partij.get(k) || {naam:String(r[1]||"Onbekend").split(/\s+/).slice(0,3).join(" "), n:0, som:0, cat:classify(r).cat}; e.n++; e.som -= r[2]; partij.set(k, e); });
+    const partij = new Map(); an.varRows.forEach(r=>{ if(r[2]>=0) return; const k = normKey(String(r[1]||"").split(/\s+/).slice(0,2).join(" ")) || "onbekend"; const e = partij.get(k) || {naam:String(r[1]||"Onbekend").split(/\s+/).slice(0,3).join(" "), n:0, som:0, cat:classify(r).cat}; e.n++; e.som -= r[2]; partij.set(k, e); });
     const vaak = [...partij.values()].filter(e=>e.n>=3 && e.som>=30).sort((a,b)=>b.som-a.som);
     if(vaak.length){ const t = vaak[0];
       voeg({score:80 + pm(t.som)/5, lvl:"info", titel:`${t.n}× ${t.naam}: ${eur0(t.som)} in ${dagen} dagen`,
@@ -2678,9 +2841,8 @@ function negeerCard(an){
     bij.length ? `${bij.length} bijschrijving${bij.length===1?"":"en"} ${eur0(bij.reduce((s,r)=>s+r[2],0))}` : ""].filter(Boolean).join(" · ")+" · tellen niet mee";
   const st = eigenStatus();
   const rows = an.negeer.slice().sort((x,y)=> x[0]<y[0]?-1 : x[0]>y[0]?1 : Math.abs(y[2])-Math.abs(x[2])).map(r => {
-    const e = st.get(rowSig(r)), c = r[2]<0 ? classify(r) : null, noot = esc(c && c.plan ? "uit het plan: "+c.plan.src.naam : eigenNoot(e));
-    if(r[2]<0) return rowBtn(r, noot);
-    return `<div class="drow" style="cursor:default"><span>${dkort(parseIso(r[0]))} · ${esc(r[1]||"Onbekend")}${noot?` <span class="muted">${noot}</span>`:""}</span><b class="amt in">+${eur(r[2])}</b></div>`;
+    const e = st.get(rowKey(r)), c = classify(r), noot = esc(c && c.plan ? "uit het plan: "+c.plan.src.naam : eigenNoot(e));
+    return rowBtn(r, noot);
   }).join("");
   const namen = splitCats(S.config.eigenRekeningen);
   const uitleg = namen.length ? `<p class="hint" style="margin:0 0 6px">Overboekingen van en naar ${esc(namen.join(" en "))} tellen niet mee als ze binnen ${EIGEN_DAGEN} dagen worden teruggestort. Wat na ${EIGEN_DAGEN} dagen niet terug is, telt wel mee. Namen aanpassen kan bij Instellingen.</p>` : "";
@@ -2689,6 +2851,18 @@ function negeerCard(an){
   return accCard("af:__negeer", "Genegeerd", meta, `${uitleg}${planUitleg}<div class="detrows">${rows}</div>`);
 }
 
+// alle bijschrijvingen van het gekozen afschrift, gegroepeerd zoals de tool ze telt
+function bijLijst(af){
+  const rows = (af.rows||[]).filter(r=>r[2]>0);
+  if(!rows.length) return `<div class="empty">Geen bijschrijvingen op dit afschrift.</div>`;
+  const per = {ink:[], terug:[], eigen:[], bij:[], negeer:[]};
+  rows.forEach(r => { const c = classify(r); per[c.type==="inkomst" ? "ink" : c.type==="teruggave" ? "terug" : c.eigen ? "eigen" : c.type==="negeer" ? "negeer" : "bij"].push({r, c}); });
+  const noot = (k, c) => k==="ink" ? esc(c.it.naam)+(c.ov?" · zo ingedeeld":"") : k==="terug" ? "voor "+esc(c.cat) : k==="eigen" ? esc(eigenNoot(c.eigen)) : c.ov ? "zo ingedeeld" : k==="negeer" ? esc(c.cat) : "telt als extra inkomen";
+  const groepen = [["bij","Overige bijschrijvingen","tellen als extra inkomen"],["ink","Inkomsten",""],["terug","Geld terug","verlaagt de uitgaven van die soort"],["eigen","Van eigen rekeningen",""],["negeer","Telt niet mee",""]];
+  return groepen.filter(([k])=>per[k].length).map(([k, l, u]) => { const som = per[k].reduce((t,x)=>t+x.r[2],0);
+    return `<div class="alg-d">${l} · ${eur0(som)}${u?` <span style="text-transform:none;letter-spacing:0;font-weight:500">· ${u}</span>`:""}</div><div>${per[k].sort((a,b)=>a.r[0]<b.r[0]?1:-1).map(x=>bijBtn(x.r, noot(k, x.c))).join("")}</div>`; }).join("")
+    + `<p class="hint">${A("af.bij") ? "Tik op een bijschrijving om hem anders in te delen: bij een inkomen, als geld terug voor een soort uitgave (bijv. een retour of Tikkie), als extra inkomen of niet meetellen. Of maak er een vast inkomen van." : "Je mag hier alleen kijken."}</p>`;
+}
 function renderAfschrift(){
   const list = S.afschriften.slice().sort((a,b)=>a.tot<b.tot?1:-1);
   const sel = list.find(a=>a.id===S.afschriftSel) || list[0];
@@ -2700,7 +2874,8 @@ function renderAfschrift(){
   const gw = geplandVsWerkelijk(an); const d = gw.werkelijk-gw.gepland;
   const groups = inboxGroups(an);
   const inboxSom = an.inbox.reduce((s,r)=>s-r[2],0);
-  const segZ = {indelen:Z("af.indelen"), soort:Z("af.soort"), vaste:Z("af.vaste")};
+  const segZ = {indelen:Z("af.indelen"), soort:Z("af.soort"), bij:Z("af.bij"), vaste:Z("af.vaste")};
+  const bijRows = (sel.rows||[]).filter(r=>r[2]>0);
   const segs = Object.keys(segZ).filter(k=>segZ[k]);
   let seg = S.segA==="losse" ? "soort" : (S.segA || (groups.length && segZ.indelen ? "indelen" : "soort"));
   if(!segs.includes(seg)) seg = segs[0] || "";
@@ -2724,6 +2899,8 @@ function renderAfschrift(){
           <div class="detrows">${e.rows.map(r=>rowBtn(r,"")).join("")}
             ${e.n>verwacht && e.it.freq!=="week" ? `<div class="small" style="color:var(--warn)">Meer betalingen dan verwacht. Hoort er één bij iets anders? Tik erop om hem anders in te delen.</div>`:""}
             ${e.it.freq!=="week" && bedragen.length && A("af.vaste") ? `<div class="btnrow">${bedragen.map(b=>`<button class="btn sm" data-setamt="${esc(e.it.id)}:${b}">Vaste last op ${eur(b)} zetten</button>`).join("")}</div>`:""}</div></details>`;}).join("") || `<div class="empty">Geen vaste lasten herkend. Voeg zoekwoorden toe aan jullie vaste lasten.</div>`}</div></section>`;
+  else if(seg==="bij") body = `<section class="card tight" data-perm="af.bij"><div class="sec-h"><h2>Bijschrijvingen</h2><span class="small muted">${bijRows.length} · +${eur0(bijRows.reduce((t,r)=>t+r[2],0))}</span></div>
+      ${bijLijst(sel)}</section>`;
   else if(seg==="soort") body = `<section class="card tight" data-perm="af.soort"><div class="sec-h"><h2>Per soort</h2><span class="small muted">meeste aandacht bovenaan</span></div>
       ${soortLijst(spSel)}</section>`;
   // Genegeerd hoort bij Per soort; staat Per soort uit, dan onder het onderdeel dat wel zichtbaar is
@@ -2736,7 +2913,8 @@ function renderAfschrift(){
     <div class="big">${eur0(an.uitTot)}</div>
     <div class="eq">Bijgeschreven <b>${eur0(an.inTot)}</b> · <b>${d>0?"+":"−"}${eur0(Math.abs(d))}</b> ${d>0?"meer":"minder"} dan gepland</div>
   </section>` : ""}
-  ${segs.length>1 ? `<div class="segbar" id="segA"><div class="seg big" role="group" aria-label="Onderdeel">${segZ.indelen?segBtn("indelen","In te delen",an.inbox.length):""}${segZ.soort?segBtn("soort","Per soort"):""}${segZ.vaste?segBtn("vaste","Vaste lasten",herkend.length):""}</div></div>` : ""}
+  ${Z("af.terugkerend") ? `<div data-perm="af.terugkerend">${terugkerendKaart()}</div>` : ""}
+  ${segs.length>1 ? `<div class="segbar" id="segA"><div class="seg big${segs.length>3?" vier":""}" role="group" aria-label="Onderdeel">${segZ.indelen?segBtn("indelen","In te delen",an.inbox.length):""}${segZ.soort?segBtn("soort","Per soort"):""}${segZ.bij?segBtn("bij","Bij",bijRows.length):""}${segZ.vaste?segBtn("vaste","Vaste lasten",herkend.length):""}</div></div>` : ""}
   ${body}
   ${Z("af.analyse") ? analyseKaart() : ""}
   ${A("af.verwijderen") ? `<div class="btnrow"><button class="btn danger sm" data-delaf="${esc(sel.id)}">Dit afschrift verwijderen</button></div>` : ""}`;
@@ -2785,7 +2963,8 @@ function openSaldo(){
   const ccOpen = sdn && (sdn.ccNu || sdn.ccPeriode || sdn.ccNaLoondag);
   const sal0 = sdn ? sdn.saldo : null, cc0 = ccOpen ? sdn.cc : 0, ccD0 = ccOpen && sdn.ccD && sdn.ccD>TODAY ? iso(sdn.ccD) : "";
   openSheet(`<div class="sheet-h"><h2>Wat staat er op de rekening?</h2><button type="button" class="iconbtn" data-close aria-label="Sluiten">✕</button></div>
-    <p class="hint">${sdn ? `Dit is het saldo dat op ${dkort(sdn.D)} is ingevuld, doorgerekend tot vandaag. Klopt het niet met de ING-app, vul dan in wat je daar ziet. Laat je het staan, dan blijft het zoals het is.` : "Kijk in de ING-app en vul in wat je ziet. Dit hoeft maar één keer: daarna rekent de tool het elke dag zelf door, met het afschrift en wat er verwacht wordt."} Ik reken het door tot loondag (${dkort(loondag)}).</p>
+    ${(() => { const sva = afschriftSaldoNieuwer(); return sva ? `<div class="alert good"><span class="dot"></span><div><b>Volgens het afschrift: ${eur(sva.saldo)}</b><span class="small">Saldo aan het eind van ${dlang(sva.datum)} (kolom "Saldo na mutatie"). De tool rekent het daarna zelf door tot vandaag.</span><div class="btnrow" style="margin-top:8px"><button type="button" class="btn sm primary" id="sdAf">Gebruik als saldo</button></div></div></div>` : ""; })()}
+    <p class="hint">${sdn ? `Dit is het saldo dat op ${dkort(sdn.D)} ${sdn.bron==="afschrift" ? "uit het afschrift is overgenomen" : "is ingevuld"}, doorgerekend tot vandaag. Klopt het niet met de ING-app, vul dan in wat je daar ziet. Laat je het staan, dan blijft het zoals het is.` : "Kijk in de ING-app en vul in wat je ziet. Dit hoeft maar één keer: daarna rekent de tool het elke dag zelf door, met het afschrift en wat er verwacht wordt."} Ik reken het door tot loondag (${dkort(loondag)}).</p>
     <div class="field"><label for="sdSaldo">Saldo ING-rekening (€)</label><input id="sdSaldo" class="bigin" inputmode="decimal" placeholder="0,00" autocomplete="off" value="${sal0==null ? "" : esc(fmt(sal0))}"></div>
     <label class="sd-chk"><input type="checkbox" id="sdRood" ${sal0!=null && sal0<0 ? "checked" : ""}> De rekening staat rood (negatief saldo)</label>
     <div class="field"><label for="sdCC">Creditcard: nog van de rekening af te schrijven (€)</label><input id="sdCC" inputmode="decimal" placeholder="0" autocomplete="off" value="${cc0>0 ? esc(fmt(cc0)) : ""}"><span class="hint">Het bedrag dat nog van ING gaat. Blijft staan tot het is afgeschreven. Is het al afgeschreven, dan zit het al in je saldo: maak dit dan leeg.</span></div>
@@ -2802,6 +2981,7 @@ function openSaldo(){
         lv.innerHTML = nu ? `Echt beschikbaar nu: <b>${eur(s-c)}</b> (saldo ${eur(s)} − creditcard ${eur(c)})` : c>0 ? `Echt beschikbaar nu: <b>${eur(s)}</b>. De creditcard (${eur(c)}) gaat af op ${dkort(dd)}.` : `Echt beschikbaar nu: <b>${eur(s)}</b>`;
       };
       iS.oninput = iC.oninput = iD.onchange = iR.onchange = upd; upd();
+      const sa = $("#sdAf"); if(sa) sa.onclick = gebruikAfschriftSaldo;
       $("#sdSave").onclick = async () => {
         const {sRaw, s, c} = lees();
         if(sRaw==="" || isNaN(s)) return toast("Vul het saldo in (bijv. 1234,56).");
@@ -2859,9 +3039,13 @@ const FORMS = {
     ["delen","Reserveren verdeeld over (maanden)","number","1 = alles in de maand zelf. Bijv. 3 = drie maanden een deel opzij, de laatste is de maand van de uitgave."],
     ["status","Status","select",[["gepland","Nog niet betaald"],["betaald","Betaald (staat op het afschrift)"]],"Zet op betaald zodra hij op het afschrift staat, dan telt hij niet dubbel."]]},
   uitgaven: {title:"Losse uitgave", fields:[["naam","Waarvoor","text"],["bedrag","Bedrag (€)","number"],["datum","Datum","date"],["categorie","Soort","select",()=>VAR_CATS.map(c=>[c,c]).concat([["__new__","+ Nieuwe categorie…"]])]]},
-  config: {title:"Instellingen", fields:[["loondag","Loondag (start budgetmaand)","number","Dag van de maand"],["vrijBudget","Vrij besteedbaar per maand (€)","number","Voor uitjes, kleding, onvoorzien. De rest gaat naar het plan."],["spaarsaldo","Huidig spaarsaldo (€)","number"],["buffer","Gewenste buffer (€)","number"],["eigenCats","Eigen categorieën vaste lasten","text","Komma-gescheiden. Haal er een weg om hem te verwijderen."],["eigenVarCats","Eigen soorten losse uitgaven","text","Komma-gescheiden"],["eigenRekeningen","Eigen rekeningen","text","Komma-gescheiden namen zoals op het afschrift. Overboekingen van en naar deze rekeningen tellen niet mee, behalve als ze niet binnen 3 dagen worden teruggestort."]]},
+  config: {title:"Instellingen", fields:[["loondag","Loondag (start budgetmaand)","number","Dag van de maand"],["vrijBudget","Vrij besteedbaar per maand (€)","number","Voor uitjes, kleding, onvoorzien. De rest gaat naar het plan."],["spaarsaldo","Huidig spaarsaldo (€)","number"],["buffer","Gewenste buffer (€)","number"],["eigenCats","Eigen categorieën vaste lasten","text","Komma-gescheiden. Haal er een weg om hem te verwijderen."],["eigenVarCats","Eigen soorten losse uitgaven","text","Komma-gescheiden"],["eigenRekeningen","Eigen rekeningen","text","Komma-gescheiden namen zoals op het afschrift. Overboekingen van en naar deze rekeningen tellen niet mee, behalve als ze niet binnen 3 dagen worden teruggestort."],
+    ["loondagVerschuiven","Loondag in het weekend of op een feestdag","select",[["eerder","De werkdag ervoor"],["later","De werkdag erna"],["niet","Niet verschuiven"]],"Valt de loondag op een zaterdag, zondag of feestdag, dan begint de budgetmaand op die werkdag. Inkomsten schuiven mee."],
+    ["overblijft","Wat er overblijft","select",[["vrij","Vrij besteden (met het budget hierboven)"],["sparen","Naar de spaarrekening (geen vrij budget)"]],"Bij sparen: geen vrij budget; bovenaan Overzicht staat wat er naar de spaarrekening kan."],
+    ["roodLimiet","Rood staan mag tot (€)","number","0 = nooit rood. Alleen voor rekeningen, als laatste redmiddel; terugbetalen, vrij besteden en sparen gaan nooit van rood geld."],
+    ["ondergrens","Marge: altijd minstens op de rekening (€)","number","0 = geen marge. Terugbetalen, vrij besteden en sparen laten dit bedrag staan."]]},
 };
-const NUMF = new Set(["delen","maandbedrag","bedrag","dag","totaal","betaald","gespaard","loondag","vrijBudget","spaarsaldo","buffer"]);
+const NUMF = new Set(["delen","maandbedrag","bedrag","dag","totaal","betaald","gespaard","loondag","vrijBudget","spaarsaldo","buffer","roodLimiet","ondergrens"]);
 function openForm(coll, id, ro, preset){
   const def0 = FORMS[coll]; const isNew = !id;
   // Instellingen: alleen de velden die dit profiel mag zien; wat niet aangepast mag worden staat vast
@@ -3071,8 +3255,8 @@ function readFileText(file){
 // per sleutel telt het hoogste aantal in één bestand, nooit de som over bestanden. Een nieuw bestand voegt dus alleen toe wat boven het
 // al bekende aantal uitkomt. Afschriften worden per loonperiode bewaard (id = start_einde van de periode), zodat een bestand met alleen
 // de nieuwste regels, of een bestand over meerdere periodes, altijd in het goede afschrift terechtkomt.
-function periodStartL(d, L){ const y=d.getFullYear(), m=d.getMonth(); return d.getDate() >= L ? new Date(y,m,L) : new Date(y,m-1,L); }
-function periodEndL(s){ return addDays(new Date(s.getFullYear(), s.getMonth()+1, s.getDate()), -1); }
+function periodStartL(d, L){ return periodeNominaal(d).start; }   // volgt de loondag op een werkdag (L blijft voor de aanroepers)
+function periodEndL(s){ return periodeNominaal(s).end; }
 function rijenSleutel(rows){ return (rows||[]).map(rowSig).sort().join("|"); }
 function groepeer(rows){ const m=new Map(); rows.forEach(r=>{ const k=rowSig(r); const l=m.get(k); if(l) l.push(r); else m.set(k,[r]); }); return m; }
 function samenvoegAfschriften(bestaand, nieuw, L){
@@ -3117,17 +3301,27 @@ async function saveStatement(text, naam){
     const L = Math.max(1, Math.min(28, Math.round(num(S.config.loondag)||25)));
     const bestaand = S.afschriften.slice();
     const res = samenvoegAfschriften(bestaand, rows, L);
+    // saldo per dag (uit "Saldo na mutatie") bij het afschrift van de loonperiode waarin die dag valt; wat er al stond blijft
+    const saldiNieuw = rows.saldi || {};
+    res.buckets.forEach(b => { const oud = bestaand.find(a=>a.id===b.id), m = Object.assign({}, (oud && oud.saldi) || {});
+      Object.entries(saldiNieuw).forEach(([d, v]) => { const dd = parseIso(d); if(!dd) return; const p = periodeNominaal(dd); if(iso(p.start).replace(/-/g,"")+"_"+iso(p.end).replace(/-/g,"")===b.id) m[d] = v; });
+      bestaand.forEach(a => { if(a.id!==b.id && a.saldi) Object.entries(a.saldi).forEach(([d, v]) => { const dd = parseIso(d); if(dd && !(d in m)){ const p = periodeNominaal(dd); if(iso(p.start).replace(/-/g,"")+"_"+iso(p.end).replace(/-/g,"")===b.id) m[d] = v; } }); });
+      const ks = Object.keys(m).sort().slice(-62); b.saldi = {}; ks.forEach(k => b.saldi[k] = m[k]); });
+    const zelfdeSaldi = (x, y) => { const a = Object.keys(x||{}), c = Object.keys(y||{}); return a.length===c.length && a.every(k => Math.abs(num((x||{})[k]) - num((y||{})[k]))<0.005); };
     if(res.ongeldig || res.buckets.reduce((s,b)=>s+b.rows.length,0)!==res.totaal) throw new Error("Er zitten regels zonder geldige datum in de opgeslagen afschriften. Er is niets gewijzigd.");
     const CH = 300, nu = new Date().toISOString(), bestand = String(naam||"afschrift.csv").slice(0,80);
     const oudById = new Map(bestaand.map(a=>[a.id,a])), nieuwIds = new Set(res.buckets.map(b=>b.id));
     // 1. eerst schrijven wat nieuw of veranderd is (een afschrift dat al klopt blijft ongemoeid) ...
     for(const b of res.buckets){
       const oud = oudById.get(b.id);
-      if(oud && rijenSleutel(oud.rows)===rijenSleutel(b.rows)) continue;
+      const kop = r => Object.assign({id:b.id, van:b.van, tot:b.tot, bestand, n:b.rows.length, delen:r, geupload:nu}, Object.keys(b.saldi).length ? {saldi:b.saldi} : {});
+      if(oud && rijenSleutel(oud.rows)===rijenSleutel(b.rows)){
+        if(!zelfdeSaldi(oud.saldi, b.saldi)) await db.doc("afschriften/"+b.id).set(Object.assign({}, kop(oud.delen||0), {bestand:oud.bestand||bestand, geupload:oud.geupload||nu}));
+        continue; }
       const delen = Math.ceil(b.rows.length/CH);
       for(let i=0;i<delen;i++) await db.doc("afschriftdelen/"+b.id+"_"+i).set({afId:b.id, i, rows:b.rows.slice(i*CH,(i+1)*CH)});
       if(oud && (oud.delen||0)>delen) for(let i=delen;i<oud.delen;i++){ try{ await db.doc("afschriftdelen/"+b.id+"_"+i).delete(); }catch(e){} }
-      await db.doc("afschriften/"+b.id).set({id:b.id, van:b.van, tot:b.tot, bestand, n:b.rows.length, delen, geupload:nu});
+      await db.doc("afschriften/"+b.id).set(kop(delen));
     }
     // 2. ... en pas daarna oude afschriften opruimen die nu in een periode zijn opgegaan (hun regels staan al in het nieuwe afschrift)
     for(const a of bestaand){
@@ -3142,7 +3336,7 @@ async function saveStatement(text, naam){
     const sleutelRij = (res.toegevoegd.length ? res.toegevoegd : rows).reduce((m,r)=>r[0]>m?r[0]:m, "");
     const doel = res.buckets.find(b => b.rows.some(r=>r[0]===sleutelRij)) || res.buckets[res.buckets.length-1];
     S.afschriftSel = doel ? doel.id : null; S.advies.afschrift = null;
-    S.laatsteImport = {bestand, nieuw:res.toegevoegd, bekend:res.bekend, totaal:rows.length};
+    S.laatsteImport = {bestand, nieuw:res.toegevoegd, bekend:res.bekend, totaal:rows.length, metSaldo: Object.keys(saldiNieuw).length>0};
     const n = res.toegevoegd.length;
     toast(n ? n+" nieuwe regel"+(n===1?"":"s")+" toegevoegd"+(res.bekend?", "+res.bekend+" al bekend (overgeslagen)":"") : "Niets nieuws: alle "+rows.length+" regels stonden er al in");
     render();
@@ -3154,9 +3348,11 @@ function laatsteImportKaart(){
   const n = li.nieuw.length, dat = r => dkort(parseIso(r[0]));
   const kop = n ? esc(n+" nieuwe regel"+(n===1?"":"s")+" toegevoegd") : "Niets nieuws in dit bestand";
   const meta = esc(li.bestand)+" · "+li.totaal+" regels gelezen, "+li.bekend+" al bekend en overgeslagen";
-  if(!n) return `<div class="alert good"><span class="dot"></span><div><b>${kop}</b><span class="small">${meta}</span></div></div>`;
+  const sva = li.metSaldo && Z("ov.saldo") ? afschriftSaldoNieuwer() : null;
+  const saldoVoorstel = sva ? `<div class="alert good"><span class="dot"></span><div><b>Saldo volgens het afschrift: ${eur(sva.saldo)}</b><span class="small">Aan het eind van ${dlang(sva.datum)}.${S.stand ? ` Nu gerekend met het saldo van ${dkort(parseIso(S.stand.datum))}.` : " Er is nog geen saldo ingevuld."}</span>${A("ov.saldo") ? `<div class="btnrow" style="margin-top:8px"><button type="button" class="btn sm primary" data-saldoaf>Gebruik als saldo</button></div>` : ""}</div></div>` : "";
+  if(!n) return `<div class="alert good"><span class="dot"></span><div><b>${kop}</b><span class="small">${meta}</span></div></div>${saldoVoorstel}`;
   const rows = li.nieuw.slice(0,15).map(r => `<div class="kv"><span>${dat(r)} · ${esc(r[1]||"Onbekend")}</span><b>${r[2]<0?eur(-r[2]):"+"+eur(r[2])}</b></div>`).join("");
-  return accCard("af:laatsteimport", kop, meta, `<div class="detrows">${rows}${n>15?`<div class="small muted">en nog ${n-15} meer</div>`:""}</div>`);
+  return accCard("af:laatsteimport", kop, meta, `<div class="detrows">${rows}${n>15?`<div class="small muted">en nog ${n-15} meer</div>`:""}</div>`)+saldoVoorstel;
 }
 async function handleFile(file){
   if(!file) return;
@@ -3171,6 +3367,7 @@ function mergeStatements(){
     const rows = (parts[m.id]||[]).sort((a,b)=>a.i-b.i).flatMap(p=>p.rows||[]);
     return Object.assign({}, m, {rows});
   });
+  S.afschriften.forEach(a => nummerRegels(a.rows));   // identieke boekingen: elk een eigen sleutel (rowKey)
 }
 // Google Drive route: the phone app cannot open a file picker inside the page, Drive can
 function payloadOf(res){
@@ -3278,6 +3475,7 @@ function openIndelen(i){
   const r0 = g.rows[0], gem = g.som/g.rows.length, sug = suggestCategory(g.naam+" "+(r0[3]||""));
   const isSchuld = sug==="Afbetalingen & schulden";
   const eersteIso = g.rows.map(r=>r[0]).sort()[0];
+  const tikkie = /tikkie/i.test(String(r0[1])+" "+String(r0[3]||""));   // een Tikkie is meestal eenmalig: standaard alleen deze
   const f = $("#dlgForm");
   f.innerHTML = `<h2>${esc(g.naam)}</h2>
     <p class="small muted" style="margin:0">${g.rows.map(r=>dkort(parseIso(r[0]))+": "+eur(-r[2])).slice(0,6).join(" · ")}${r0[3]?"<br>"+esc(r0[3]):""}</p>
@@ -3304,10 +3502,15 @@ function openIndelen(i){
       <div class="alert" id="sc-calc"><span class="dot"></span><div><b>Vul totaalbedrag en aantal betalingen in</b><span class="small">Dan reken ik het bedrag per maand en de laatste termijn uit.</span></div></div>
     </div>
     <div class="field" data-w="los"><label for="in-los">Soort uitgave</label><select id="in-los" data-newcat="los">${["Boodschappen",...VAR_CATS].map(c=>`<option>${esc(c)}</option>`).join("")}${NEWCAT}</select></div>
+    <fieldset data-w="los negeer" style="border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:8px"><legend class="small muted" style="font-weight:600;margin-bottom:6px">Geldt voor</legend>
+      <label class="chk"><input type="radio" name="in-scope" value="een" ${tikkie?"checked":""}><span>Alleen deze afschrijving</span></label>
+      <label class="chk"><input type="radio" name="in-scope" value="altijd" ${tikkie?"":"checked"}><span>Ook voortaan alles herkend aan de tekst hierboven</span></label></fieldset>
     <div class="btnrow" style="justify-content:flex-end"><button type="button" class="btn" id="dlgCancel">Annuleren</button><button type="submit" class="btn primary">Indelen</button></div>`;
   stripNewCat(f);
-  const sync = () => { const w=$("#in-wat",f).value; f.querySelectorAll("[data-w]").forEach(el=>el.hidden = el.dataset.w!==w); };
-  $("#in-wat",f).onchange = sync; sync();
+  const scope = () => { const x = f.querySelector('input[name="in-scope"]:checked'); return x ? x.value : "altijd"; };
+  const sync = () => { const w=$("#in-wat",f).value; f.querySelectorAll("[data-w]").forEach(el=>el.hidden = !el.dataset.w.split(" ").includes(w));
+    $("#in-key",f).closest(".field").hidden = (w==="los" || w==="negeer") && scope()==="een"; };
+  $("#in-wat",f).onchange = sync; f.querySelectorAll('input[name="in-scope"]').forEach(x=>x.addEventListener("change", sync)); sync();
   const nieuwBedrag = Math.round(gem*100)/100;
   const amtSync = () => { const p = S.posten.find(x=>x.id===$("#in-post",f).value); const lbl=$("#in-amtlbl",f), cb=$("#in-setamt",f);
     const verschil = p && Math.abs(num(p.bedrag)-nieuwBedrag)>=0.005; cb.closest("label").hidden = !verschil;
@@ -3333,8 +3536,8 @@ function openIndelen(i){
   f.onchange = null;
   f.onsubmit = async ev => {
     ev.preventDefault();
-    const key = $("#in-key",f).value.trim().toLowerCase(); if(!key) return toast("Vul in waaraan ik dit herken.");
-    const w = $("#in-wat",f).value;
+    const w = $("#in-wat",f).value, alleenDeze = (w==="los" || w==="negeer") && scope()==="een";
+    const key = $("#in-key",f).value.trim().toLowerCase(); if(!key && !alleenDeze) return toast("Vul in waaraan ik dit herken.");
     if((w==="nieuw" && $("#in-cat",f).value==="__new__") || (w==="los" && $("#in-los",f).value==="__new__")) return toast("Voeg eerst de nieuwe categorie toe of kies een andere.");
     try{
       if(w==="koppel"){ const p = S.posten.find(x=>x.id===$("#in-post",f).value); const kws = keywordsOf(p); if(!kws.includes(key)) kws.push(key);
@@ -3343,8 +3546,11 @@ function openIndelen(i){
       else if(w==="nieuw"){ const id=uid(); await db.doc("posten/"+id).set({id, naam:$("#in-naam",f).value.trim()||g.naam, bedrag:num($("#in-bedrag",f).value), freq:"maand", dag:Math.min(31,Math.max(1,Math.round(num($("#in-dag",f).value))||1)), categorie:$("#in-cat",f).value, zoekwoorden:key, bijgewerkt:new Date().toISOString()}); }
       else if(w==="schuld"){ const c = schuldCalc(); if(!c) return toast("Vul totaalbedrag en aantal betalingen in.");
         const id=uid(); await db.doc("posten/"+id).set({id, naam:$("#sc-naam",f).value.trim()||g.naam, bedrag:c.bedrag, freq:"maand", dag:c.dag, categorie:"Afbetalingen & schulden", startdatum:iso(c.st), einddatum:iso(c.eind), totaal:c.tot, termijnen:c.n, zoekwoorden:key, bijgewerkt:new Date().toISOString()}); }
+      else if(alleenDeze){ const sig = rowKey(r0), data = {id:sig, sig, soort: w==="negeer" ? "negeer" : "var", naam:String(r0[1]||"").slice(0,70), datum:r0[0], bedrag:Math.round(-r0[2]*100)/100, bijgewerkt:new Date().toISOString()};
+        if(w==="los") data.categorie = $("#in-los",f).value;
+        await db.doc("herindeling/"+sig).set(data); S.herind.set(sig, data); }
       else { const id=uid(); await db.doc("regels/"+id).set({id, zoekwoord:key, categorie: w==="negeer" ? "Negeren" : $("#in-los",f).value}); }
-      toast("Ingedeeld"); $("#dlg").close();
+      toast(alleenDeze ? "Ingedeeld (alleen deze)" : "Ingedeeld"); $("#dlg").close(); render();
     }catch(e){ toast(e.code==="not_granted"?"Je hebt alleen leesrechten.":"Indelen lukte niet."); }
   };
   $("#dlg").showModal();
@@ -3366,6 +3572,7 @@ function openHerindeel(sig){
     <div class="alert"><span class="dot"></span><div><b>Nu: ${esc(huidig)}</b><span class="small">${esc(bron)}</span></div></div>
     <div class="field"><label for="hi-wat">Indelen als</label><select id="hi-wat">
       <option value="koppel" ${wat0==="koppel"?"selected":""}>Betaling voor een vaste last</option>
+      ${A("vl.uitgaven") ? `<option value="nieuw">Nieuwe vaste last</option>` : ""}
       <option value="schuld" ${wat0==="schuld"?"selected":""}>Betaling voor een schuld</option>
       <option value="los" ${wat0==="los"?"selected":""}>Losse uitgave</option>
       ${planOpts.length ? `<option value="plan" ${wat0==="plan"?"selected":""}>Terugbetaling of sparen uit het plan</option>` : ""}
@@ -3373,10 +3580,16 @@ function openHerindeel(sig){
     <div data-w="koppel schuld" style="display:flex;flex-direction:column;gap:10px"><div class="field"><label for="hi-post" id="hi-postlbl">Vaste last</label><select id="hi-post"></select><span class="hint" id="hi-posthint" hidden>Nog geen schulden in de lijst. Voeg er een toe via Vaste lasten, of kies "Betaling voor een vaste last".</span></div>
       <div class="field" id="hi-amtf"><label for="hi-amt" id="hi-amtlbl">Bedrag van deze vaste last</label><input id="hi-amt" type="text" inputmode="decimal" autocomplete="off">
         <span class="hint" id="hi-amthint"></span></div></div>
+    <div data-w="nieuw" style="display:flex;flex-direction:column;gap:12px">
+      <div class="field"><label for="hi-nnaam">Naam</label><input id="hi-nnaam" value="${esc(eigenPersoon(r) ? "Naar "+(r[1]||"eigen rekening") : (r[1]||""))}"></div>
+      <div class="two"><div class="field"><label for="hi-nbedrag">Bedrag per maand (€)</label><input id="hi-nbedrag" inputmode="decimal" value="${String(amt.toFixed(2)).replace(".",",")}"></div>
+      <div class="field"><label for="hi-ndag">Dag</label><input id="hi-ndag" inputmode="numeric" value="${parseIso(r[0]).getDate()}"></div></div>
+      <div class="field"><label for="hi-ncat">Categorie</label><select id="hi-ncat" data-newcat="vast">${CATS.map(x=>`<option ${x===(suggestCategory((r[1]||"")+" "+(r[3]||""))||"Overig")?"selected":""}>${esc(x)}</option>`).join("")}${NEWCAT}</select></div>
+      <div class="field"><label for="hi-nzw">Herkennen aan</label><input id="hi-nzw" value="${esc(key0)}"><span class="hint">Zo herkent de tool deze vaste last op volgende afschriften. Leeg = alleen deze afschrijving.</span></div></div>
     <div class="field" data-w="plan"><label for="hi-plan">Welke</label><select id="hi-plan">${planOpts.map(x=>`<option value="${x.kind}:${esc(x.src.id)}" ${c.plan&&c.plan.src.id===x.src.id?"selected":""}>${x.kind==="doel"?"Sparen: ":"Terugbetalen: "}${esc(x.src.naam)}</option>`).join("")}</select>
       <span class="hint">Telt dan niet als losse uitgave, maar als betaling uit het plan in de loonperiode van deze datum.</span></div>
     <div class="field" data-w="los"><label for="hi-los">Soort uitgave</label><select id="hi-los" data-newcat="los">${losCats.map(x=>`<option ${x===c.cat?"selected":""}>${esc(x)}</option>`).join("")}${NEWCAT}</select></div>
-    <fieldset style="border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:8px"><legend class="small muted" style="font-weight:600;margin-bottom:6px">Geldt voor</legend>
+    <fieldset data-w="koppel schuld los plan negeer" style="border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:8px"><legend class="small muted" style="font-weight:600;margin-bottom:6px">Geldt voor</legend>
       <label class="chk"><input type="radio" name="hi-scope" value="een" checked><span>Alleen deze afschrijving</span></label>
       <label class="chk"><input type="radio" name="hi-scope" value="altijd"><span>Ook voortaan alles herkend aan:</span></label>
       <div class="field" id="hi-keyf" hidden><input id="hi-key" value="${esc(key0)}" aria-label="Herkennen aan"><span class="hint">Tekst uit de naam of omschrijving. Korter is ruimer.</span></div><span class="hint">Kies je "Alleen deze afschrijving" en een soort losse uitgave, dan leert de app ervan: een volgende afschrijving bij dezelfde partij met ongeveer hetzelfde bedrag (binnen 30%) krijgt dezelfde soort, met jullie notitie als reden.</span></fieldset>
@@ -3402,21 +3615,26 @@ function openHerindeel(sig){
   f.onsubmit = async ev => {
     ev.preventDefault();
     if(!db) return toast("Opslaan kan niet: geen verbinding met de opslag.");
-    const w = $("#hi-wat",f).value, altijd = f.querySelector('input[name="hi-scope"]:checked').value==="altijd";
+    const w = $("#hi-wat",f).value, altijd = w!=="nieuw" && f.querySelector('input[name="hi-scope"]:checked').value==="altijd";
     const key = $("#hi-key",f).value.trim().toLowerCase();
     if(altijd && !key) return toast("Vul in waaraan ik dit voortaan herken.");
     const data = {id:sig, sig, naam:String(r[1]||"").slice(0,70), datum:r[0], bedrag:amt, bijgewerkt:new Date().toISOString()};
     const note = $("#hi-note",f).value.trim(), note0 = ((S.notities.get(sig)||{}).tekst||"").trim();
-    let post = null;
-    if(w==="koppel"||w==="schuld"){ post = S.posten.find(x=>x.id===$("#hi-post",f).value); if(!post) return toast(w==="schuld"?"Kies een schuld uit de lijst.":"Kies een vaste last."); data.soort="post"; data.postId=post.id; }
+    let post = null, nieuwePost = null;
+    if(w==="nieuw"){ const nb = Math.round(num($("#hi-nbedrag",f).value)*100)/100, cat = $("#hi-ncat",f).value;
+      if(!(nb>0)) return toast("Vul een bedrag in."); if(cat==="__new__") return toast("Voeg eerst de nieuwe categorie toe of kies een andere.");
+      nieuwePost = {id:uid(), naam:$("#hi-nnaam",f).value.trim()||String(r[1]||"Vaste last"), bedrag:nb, freq:"maand", dag:Math.min(31,Math.max(1,Math.round(num($("#hi-ndag",f).value))||1)), categorie:cat, zoekwoorden:($("#hi-nzw",f).value||"").trim().toLowerCase(), bijgewerkt:new Date().toISOString()};
+      data.soort="post"; data.postId=nieuwePost.id; }
+    else if(w==="koppel"||w==="schuld"){ post = S.posten.find(x=>x.id===$("#hi-post",f).value); if(!post) return toast(w==="schuld"?"Kies een schuld uit de lijst.":"Kies een vaste last."); data.soort="post"; data.postId=post.id; }
     else if(w==="negeer") data.soort="negeer";
     else if(w==="plan"){ const v=$("#hi-plan",f).value, i=v.indexOf(":"); data.soort="plan"; data.planKind=v.slice(0,i); data.planId=v.slice(i+1); }
     else { const cat=$("#hi-los",f).value; if(cat==="__new__") return toast("Voeg eerst de nieuwe categorie toe of kies een andere."); data.soort="var"; data.categorie=cat; }
-    const veranderd = altijd || w!==wat0 || (post && !(c.it && c.it.id===post.id)) || (w==="los" && data.categorie!==c.cat) || (w==="plan" && !(c.ov && c.ov.planId===data.planId));
+    const veranderd = altijd || w!==wat0 || !!nieuwePost || (post && !(c.it && c.it.id===post.id)) || (w==="los" && data.categorie!==c.cat) || (w==="plan" && !(c.ov && c.ov.planId===data.planId));
     let nieuwBedrag = null;
     if(post){ const v = Math.round(num($("#hi-amt",f).value)*100)/100; if(!(v>0)) return toast(w==="schuld"?"Vul een geldig termijnbedrag in.":"Vul een geldig bedrag in voor de vaste last."); if(Math.abs(v-num(post.bedrag))>=0.005) nieuwBedrag = v; }
     try{
       if(note!==note0){ if(note){ const nd={id:sig, sig, tekst:note, naam:String(r[1]||"").slice(0,70), datum:r[0], bedrag:amt, bijgewerkt:new Date().toISOString()}; await db.doc("notities/"+sig).set(nd); S.notities.set(sig, nd); } else { await db.doc("notities/"+sig).delete(); S.notities.delete(sig); } }
+      if(nieuwePost) await db.doc("posten/"+nieuwePost.id).set(nieuwePost);
       if(veranderd){ await db.doc("herindeling/"+sig).set(data); S.herind.set(sig, data); }
       if(post){ const upd={}; if(nieuwBedrag!=null){ upd.bedrag=nieuwBedrag; upd.bijgewerkt=new Date().toISOString(); }
         if(altijd){ const kws=keywordsOf(post); if(!kws.includes(key)){ kws.push(key); upd.zoekwoorden=kws.join(", "); } }
@@ -3425,11 +3643,134 @@ function openHerindeel(sig){
         if(it){ const kws=keywordsOf(it); if(!kws.includes(key)){ kws.push(key); await db.doc(coll+"/"+it.id).update({zoekwoorden:kws.join(", ")}); it.zoekwoorden=kws.join(", "); } } }
       else if(altijd){ const bestaand = S.regels.find(x=>String(x.zoekwoord||"").toLowerCase().trim()===key); const id = bestaand ? bestaand.id : uid();
         await db.doc("regels/"+id).set({id, zoekwoord:key, categorie: w==="negeer" ? "Negeren" : data.categorie}); }
-      const wat = [veranderd?(altijd?"ingedeeld, ook voor volgende keren":"ingedeeld"):"", nieuwBedrag!=null?post.naam+" nu "+eur(nieuwBedrag):"", note!==note0?(note?"notitie bewaard":"notitie verwijderd"):""].filter(Boolean);
+      const wat = [nieuwePost ? "vaste last "+nieuwePost.naam+" toegevoegd" : veranderd?(altijd?"ingedeeld, ook voor volgende keren":"ingedeeld"):"", nieuwBedrag!=null?post.naam+" nu "+eur(nieuwBedrag):"", note!==note0?(note?"notitie bewaard":"notitie verwijderd"):""].filter(Boolean);
       toast(wat.length ? wat.join(" · ").replace(/^./,m=>m.toUpperCase()) : "Niets gewijzigd"); $("#dlg").close(); render();
     }catch(e){ toast(e.code==="not_granted"?"Je hebt alleen leesrechten.":"Opslaan lukte niet."); }
   };
   $("#dlg").showModal();
+}
+
+// ---------- bijschrijving indelen (tabje Bij) ----------
+function openBijIndeel(sig){
+  const fr = findRow(sig); if(!fr || !(fr.r[2]>0)) return toast("Deze bijschrijving vind ik niet meer.");
+  const r = fr.r, c = classify(r), amt = Math.round(r[2]*100)/100, key0 = keyFromRow(r) || "";
+  const huidig = c.type==="inkomst" ? "Inkomen: "+c.it.naam : c.type==="teruggave" ? "Geld terug voor "+c.cat : c.eigen ? "Van eigen rekening" : c.type==="negeer" ? "Telt niet mee" : "Extra inkomen (overige bijschrijving)";
+  const bron = c.ov ? "door jullie zo ingedeeld" : c.eigen ? "eigen rekening: "+eigenNoot(c.eigen) : c.type==="inkomst" ? "herkend aan het zoekwoord van het inkomen" : c.type==="negeer" ? "volgens een eerdere indeling" : "niet herkend: telt als extra inkomen";
+  const wat0 = c.type==="inkomst" ? "ink" : c.type==="teruggave" ? "terug" : c.type==="negeer" ? "negeer" : "bij";
+  const inks = S.inkomsten.slice().sort((a,b)=>String(a.naam).localeCompare(b.naam)), magInk = A("vl.inkomsten");
+  const losCats = ["Boodschappen",...VAR_CATS];
+  const f = $("#dlgForm");
+  f.innerHTML = `<h2>${esc(r[1]||"Onbekend")}</h2>
+    <p class="small muted" style="margin:0">${dlang(parseIso(r[0]))} · +${eur(amt)}${r[3]?"<br>"+esc(r[3]):""}</p>
+    <div class="alert"><span class="dot"></span><div><b>Nu: ${esc(huidig)}</b><span class="small">${esc(bron)}</span></div></div>
+    <div class="field"><label for="bi-wat">Dit is</label><select id="bi-wat">
+      ${inks.length ? `<option value="ink" ${wat0==="ink"?"selected":""}>Een inkomen dat al in de lijst staat</option>` : ""}
+      ${magInk ? `<option value="nieuwink">Een nieuw vast inkomen</option>` : ""}
+      <option value="terug" ${wat0==="terug"?"selected":""}>Geld terug van een uitgave (retour, Tikkie)</option>
+      <option value="bij" ${wat0==="bij"?"selected":""}>Extra inkomen, eenmalig</option>
+      <option value="negeer" ${wat0==="negeer"?"selected":""}>Telt niet mee</option></select></div>
+    <div class="field" data-w="ink"><label for="bi-ink">Inkomen</label><select id="bi-ink">${inks.map(i=>`<option value="${esc(i.id)}" ${c.it&&c.it.id===i.id?"selected":""}>${esc(i.naam)} (${eur(num(i.bedrag))})</option>`).join("")}</select></div>
+    <div data-w="nieuwink" style="display:flex;flex-direction:column;gap:12px">
+      <div class="field"><label for="bi-naam">Naam</label><input id="bi-naam" value="${esc(r[1]||"")}"></div>
+      <div class="two"><div class="field"><label for="bi-bedrag">Bedrag per maand (€)</label><input id="bi-bedrag" inputmode="decimal" value="${String(amt.toFixed(2)).replace(".",",")}"></div>
+      <div class="field"><label for="bi-dag">Dag</label><input id="bi-dag" inputmode="numeric" value="${parseIso(r[0]).getDate()}"></div></div>
+      <div class="field"><label for="bi-zw">Herkennen aan</label><input id="bi-zw" value="${esc(key0)}"><span class="hint">Tekst uit de naam of omschrijving. Korter is ruimer.</span></div></div>
+    <div class="field" data-w="terug"><label for="bi-cat">Voor welke soort uitgave?</label><select id="bi-cat">${losCats.map(x=>`<option ${x===c.cat?"selected":""}>${esc(x)}</option>`).join("")}</select>
+      <span class="hint">Verlaagt wat er bij die soort is uitgegeven, dus ook het vrije budget. Telt niet als inkomen.</span></div>
+    <span class="hint" data-w="bij">Telt als extra inkomen in deze loonperiode.</span>
+    <span class="hint" data-w="negeer">Telt nergens mee, bijv. een terugboeking of een overboeking die al geregeld is.</span>
+    <fieldset data-w="ink" style="border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:8px"><legend class="small muted" style="font-weight:600;margin-bottom:6px">Geldt voor</legend>
+      <label class="chk"><input type="radio" name="bi-scope" value="een" checked><span>Alleen deze bijschrijving</span></label>
+      ${magInk ? `<label class="chk"><input type="radio" name="bi-scope" value="altijd"><span>Ook voortaan alles herkend aan:</span></label>
+      <div class="field" id="bi-keyf" hidden><input id="bi-key" value="${esc(key0)}" aria-label="Herkennen aan"></div>` : ""}</fieldset>
+    <div class="field"><label for="bi-note">Notitie</label><textarea id="bi-note" rows="2" maxlength="300">${esc((S.notities.get(sig)||{}).tekst||"")}</textarea></div>
+    <div class="btnrow" style="justify-content:flex-end">${c.ov?`<button type="button" class="btn" id="bi-reset" style="margin-right:auto">Terug naar automatisch</button>`:""}<button type="button" class="btn" id="dlgCancel">Annuleren</button><button type="submit" class="btn primary">Opslaan</button></div>`;
+  const sync = () => { const w=$("#bi-wat",f).value; f.querySelectorAll("[data-w]").forEach(el=>el.hidden = !el.dataset.w.split(" ").includes(w)); };
+  $("#bi-wat",f).onchange = sync; sync(); f.onchange = null;
+  f.querySelectorAll('input[name="bi-scope"]').forEach(x=>x.onchange = ()=>{ const kf=$("#bi-keyf",f); if(kf) kf.hidden = f.querySelector('input[name="bi-scope"]:checked').value!=="altijd"; });
+  $("#dlgCancel",f).onclick = () => $("#dlg").close();
+  const rs = $("#bi-reset",f); if(rs) rs.onclick = async () => { try{ await db.doc("herindeling/"+sig).delete(); S.herind.delete(sig); toast("Weer automatisch ingedeeld"); $("#dlg").close(); render(); }catch(e){ toast(e.code==="not_granted"?"Je hebt alleen leesrechten.":"Terugzetten lukte niet."); } };
+  f.onsubmit = async ev => {
+    ev.preventDefault();
+    if(!db) return toast("Opslaan kan niet: geen verbinding met de opslag.");
+    const w = $("#bi-wat",f).value, sc = f.querySelector('input[name="bi-scope"]:checked'), altijd = w==="ink" && sc && sc.value==="altijd";
+    const data = {id:sig, sig, naam:String(r[1]||"").slice(0,70), datum:r[0], bedrag:amt, bijgewerkt:new Date().toISOString()};
+    const note = $("#bi-note",f).value.trim(), note0 = ((S.notities.get(sig)||{}).tekst||"").trim();
+    let nieuwInk = null, zwInk = null;
+    if(w==="ink"){ const it = S.inkomsten.find(i=>i.id===$("#bi-ink",f).value); if(!it) return toast("Kies een inkomen."); data.soort="ink"; data.inkId=it.id;
+      if(altijd){ const key = ($("#bi-key",f).value||"").trim().toLowerCase(); if(!key) return toast("Vul in waaraan ik dit voortaan herken."); zwInk = {it, key}; } }
+    else if(w==="nieuwink"){ const nb = Math.round(num($("#bi-bedrag",f).value)*100)/100; if(!(nb>0)) return toast("Vul een bedrag in.");
+      const id = uid(); nieuwInk = {id, naam:$("#bi-naam",f).value.trim()||String(r[1]||"Inkomen"), bedrag:nb, dag:Math.min(31,Math.max(1,Math.round(num($("#bi-dag",f).value))||1)), zoekwoorden:($("#bi-zw",f).value||"").trim().toLowerCase(), bijgewerkt:new Date().toISOString()};
+      data.soort="ink"; data.inkId=id; }
+    else if(w==="terug") { data.soort="terug"; data.categorie=$("#bi-cat",f).value; }
+    else data.soort = w==="negeer" ? "negeer" : "bij";
+    const veranderd = w!==wat0 || !!nieuwInk || !!zwInk || (w==="ink" && !(c.it && c.it.id===data.inkId)) || (w==="terug" && data.categorie!==c.cat) || (!c.ov && w!=="ink");
+    try{
+      if(note!==note0){ if(note){ const nd={id:sig, sig, tekst:note, naam:data.naam, datum:r[0], bedrag:amt, bijgewerkt:new Date().toISOString()}; await db.doc("notities/"+sig).set(nd); S.notities.set(sig, nd); } else { await db.doc("notities/"+sig).delete(); S.notities.delete(sig); } }
+      if(nieuwInk) await db.doc("inkomsten/"+nieuwInk.id).set(nieuwInk);
+      if(zwInk){ const kws = keywordsOf(zwInk.it); if(!kws.includes(zwInk.key)){ kws.push(zwInk.key); await db.doc("inkomsten/"+zwInk.it.id).update({zoekwoorden:kws.join(", ")}); zwInk.it.zoekwoorden = kws.join(", "); } }
+      if(veranderd){ await db.doc("herindeling/"+sig).set(data); S.herind.set(sig, data); }
+      toast(nieuwInk ? "Vast inkomen toegevoegd" : veranderd ? "Ingedeeld" : note!==note0 ? (note?"Notitie bewaard":"Notitie verwijderd") : "Niets gewijzigd"); $("#dlg").close(); render();
+    }catch(e){ toast(e.code==="not_granted"?"Je hebt alleen leesrechten.":"Opslaan lukte niet."); }
+  };
+  $("#dlg").showModal();
+}
+
+// ---------- terugkerende betalingen (op alle afschriften) ----------
+// Dezelfde partij (de eerste woorden van de naam) minstens 3 keer, elke maand (tussenpoos 26–35 dagen) of, bij uitgaven, elke week
+// (6–8 dagen); 75% van de tussenpozen binnen die marge; bedrag binnen 15% (uitgaven) of 20% (inkomsten), minstens €2, van het
+// midden; laatste keer hooguit 45 (maand) of 21 (week) dagen vóór het einde van de afschriften; en nog niet bij een vaste last of
+// inkomen. "Niet vast" bewaart de keuze in terugkerend/<id>.
+function terugkerendeKandidaten(kant){
+  const tot = afschriftTot(); if(!tot) return [];
+  const nee = new Set((S.terugkerend||[]).filter(x=>x.status==="nee").map(x=>x.id));
+  const groep = new Map(), seen = new Set();
+  S.afschriften.forEach(a => (a.rows||[]).forEach(r => {
+    const k = rowKey(r); if(seen.has(k)) return; seen.add(k);
+    if(kant==="af" ? !(r[2]<0) : !(r[2]>0)) return;
+    const c = classify(r);
+    if(c.eigen || (kant==="af" ? c.type!=="var" : c.type!=="bij")) return;
+    const partij = keyFromRow(r); if(!partij) return;
+    (groep.get(partij) || groep.set(partij, []).get(partij)).push({r, d:parseIso(r[0]), b:Math.abs(r[2])});
+  }));
+  const med = a => { const x = a.slice().sort((p,q)=>p-q), n = x.length; return n%2 ? x[(n-1)/2] : (x[n/2-1]+x[n/2])/2; };
+  const out = [];
+  groep.forEach((lijst, partij) => {
+    if(lijst.length<3) return;
+    const id = (kant==="af"?"t_":"i_")+hashStr(partij); if(nee.has(id)) return;
+    lijst.sort((x,y)=>x.d-y.d);
+    const mb = med(lijst.map(x=>x.b)), tol = Math.max(2, mb*(kant==="af"?0.15:0.20));
+    const ok = lijst.filter(x=>Math.abs(x.b-mb)<=tol); if(ok.length<3) return;
+    const gaps = []; for(let i=1;i<ok.length;i++) gaps.push(daysBetween(ok[i-1].d, ok[i].d));
+    const mg = med(gaps), soort = mg>=26 && mg<=35 ? "maand" : (kant==="af" && mg>=6 && mg<=8 ? "week" : null); if(!soort) return;
+    const [lo, hi] = soort==="maand" ? [26,35] : [6,8];
+    if(gaps.filter(g=>g>=lo && g<=hi).length < 0.75*gaps.length) return;
+    const laatste = ok[ok.length-1].d; if(daysBetween(laatste, tot) > (soort==="maand" ? 45 : 21)) return;
+    const r0 = ok[ok.length-1].r;
+    out.push({id, kant, partij, naam:String(r0[1]||partij).trim(), n:ok.length, bedrag:Math.round(mb*100)/100, soort, dag:Math.round(med(ok.map(x=>x.d.getDate()))), weekdag:laatste.getDay(), laatste, rows:ok.map(x=>x.r)});
+  });
+  return out.sort((a,b)=>b.bedrag*(b.soort==="week"?52/12:1)-a.bedrag*(a.soort==="week"?52/12:1));
+}
+function terugkerendKaart(){
+  const lijst = terugkerendeKandidaten("af").concat(terugkerendeKandidaten("bij"));
+  S.tkLijst = lijst; if(!lijst.length) return "";
+  const rij = (k, i) => `<div class="tkr"><div class="t1"><span class="name">${esc(k.naam)}</span><b${k.kant==="bij"?' class="amt in"':""}>${k.kant==="bij"?"+":""}${eur(k.bedrag)}</b></div>
+    <small>${k.n}× · ${k.soort==="week" ? "elke "+DAGEN_L[k.weekdag] : "elke maand rond de "+k.dag+"e"} · laatst ${dkort(k.laatste)} · nu ${k.kant==="af" ? "losse uitgave" : "extra inkomen"}</small>
+    <div class="btnrow">${k.kant==="af" ? (A("vl.uitgaven") ? `<button type="button" class="btn sm primary" data-tk="vast:${i}">Vaste last maken</button>` : "") : (A("vl.inkomsten") ? `<button type="button" class="btn sm primary" data-tk="ink:${i}">Inkomen maken</button>` : "")}${A("af.terugkerend") ? `<button type="button" class="btn sm" data-tk="nee:${i}">Niet vast</button>` : ""}</div></div>`;
+  const toon = hasMore("tk") ? lijst : lijst.slice(0,4);
+  return accCard("af:terugkerend", "Lijkt vast terug te komen", `${lijst.length} ${lijst.length===1?"betaling":"betalingen"} · maak er een vaste last of inkomen van`,
+    `<div>${toon.map((k)=>rij(k, lijst.indexOf(k))).join("")}</div>${moreBtn("tk", lijst.length, 4)}<p class="hint">Gevonden op alle afschriften: dezelfde naam minstens 3 keer, elke maand (of week) ongeveer hetzelfde bedrag, en nog niet bij een vaste last of inkomen. Als vaste last of inkomen rekent de tool er vooruit mee; het formulier staat vooraf ingevuld, met het zoekwoord.</p>`);
+}
+async function tkActie(v){
+  const i = v.indexOf(":"), a = v.slice(0,i), k = (S.tkLijst||[])[+v.slice(i+1)]; if(!k) return;
+  if(a==="vast"){ if(!A("vl.uitgaven")) return toast("Vaste lasten toevoegen staat voor jou uit.");
+    return openForm("posten", null, false, {naam:k.naam, bedrag:k.bedrag, freq:k.soort, dag:k.dag, weekdag:String(k.weekdag), categorie:suggestCategory(k.naam+" "+(k.rows[0][3]||""))||"Overig", zoekwoorden:k.partij}); }
+  if(a==="ink"){ if(!A("vl.inkomsten")) return toast("Inkomsten toevoegen staat voor jou uit.");
+    return openForm("inkomsten", null, false, {naam:k.naam, bedrag:k.bedrag, dag:k.dag, zoekwoorden:k.partij}); }
+  if(!A("af.terugkerend")) return toast("Dit staat voor jou uit.");
+  if(!db) return toast("Opslaan kan niet: geen verbinding met de opslag.");
+  try{ await db.doc("terugkerend/"+k.id).set({id:k.id, status:"nee", naam:k.naam, sleutel:k.partij, kant:k.kant, bijgewerkt:new Date().toISOString()}); toast(k.naam+": niet vast"); }
+  catch(e){ toast(e.code==="not_granted"?"Je hebt alleen leesrechten.":"Opslaan lukte niet."); }
 }
 
 // ---------- "Kan dit?" ----------
@@ -3499,6 +3840,9 @@ function bindAll(){ if(S.focusDet) setTimeout(focusNa, 80);
     try{ await db.doc("posten/"+id).update({bedrag:v, bijgewerkt:new Date().toISOString()}); p.bedrag=v; toast(p.naam+": vaste last nu "+eur(v)); render(); }
     catch(e){ b.disabled=false; toast(e.code==="not_granted"?"Je hebt alleen leesrechten.":"Bijwerken lukte niet."); } });
   app.querySelectorAll("[data-herindeel]").forEach(b=>b.onclick=()=>{ if(!magAanpassen(b)) return toast("Anders indelen staat voor jou uit."); openHerindeel(b.dataset.herindeel); });
+  app.querySelectorAll("[data-bij]").forEach(b=>b.onclick=()=>{ if(!A("af.bij")) return toast("Bijschrijvingen indelen staat voor jou uit."); openBijIndeel(b.dataset.bij); });
+  app.querySelectorAll("[data-saldoaf]").forEach(b=>b.onclick=gebruikAfschriftSaldo);
+  app.querySelectorAll("[data-tk]").forEach(b=>b.onclick=()=>tkActie(b.dataset.tk));
   app.querySelectorAll("[data-indelen]").forEach(b=>b.onclick=()=>{ if(!A("af.indelen")) return toast("Indelen staat voor jou uit."); openIndelen(+b.dataset.indelen); });
   // v2 layout: segments, "toon alle", tiles and bottom sheets
   app.querySelectorAll("[data-segl]").forEach(b=>b.onclick=()=>{ S.segL=b.dataset.segl; render(); });
@@ -3718,7 +4062,7 @@ let dataGestart = false;
 function startData(){
   if(dataGestart) return; dataGestart = true;
   const on = (name, setter) => db.collection(name).onSnapshot(snap => { setter(snap.docs.map(d=>Object.assign({id:d.id}, d.data()))); S.loaded[name]=true; render(); }, err => { toast("Laden van "+name+" lukte niet ("+err.code+")"); });
-  on("posten", v=>S.posten=v); on("inkomsten", v=>S.inkomsten=v); on("extras", v=>S.extras=v); on("doelen", v=>S.doelen=v); on("afschriften", v=>{ S.afMeta=v; mergeStatements(); }); on("afschriftdelen", v=>{ S.afDelen=v; mergeStatements(); }); on("uitgaven", v=>S.uitgaven=v); on("gepland", v=>S.gepland=v); on("regels", v=>S.regels=v); on("herindeling", v=>{ S.herind = new Map(v.map(x=>[x.sig||x.id, x])); }); on("notities", v=>{ S.notities = new Map(v.map(x=>[x.sig||x.id, x])); }); on("verwacht", v=>{ S.verwacht = new Map(v.map(x=>[x.id, x])); VERV.clear(); v.forEach(x=>{ if(x.status==="vervalt") VERV.add(x.id); }); INK = {key:null, val:null}; EIGEN = {src:null, key:null, map:new Map()}; }); on("planbetaling", v=>S.planbet=v);
+  on("posten", v=>S.posten=v); on("inkomsten", v=>S.inkomsten=v); on("extras", v=>S.extras=v); on("doelen", v=>S.doelen=v); on("afschriften", v=>{ S.afMeta=v; mergeStatements(); }); on("afschriftdelen", v=>{ S.afDelen=v; mergeStatements(); }); on("uitgaven", v=>S.uitgaven=v); on("gepland", v=>S.gepland=v); on("regels", v=>S.regels=v); on("herindeling", v=>{ S.herind = new Map(v.map(x=>[x.sig||x.id, x])); }); on("notities", v=>{ S.notities = new Map(v.map(x=>[x.sig||x.id, x])); }); on("verwacht", v=>{ S.verwacht = new Map(v.map(x=>[x.id, x])); VERV.clear(); v.forEach(x=>{ if(x.status==="vervalt") VERV.add(x.id); }); INK = {key:null, val:null}; EIGEN = {src:null, key:null, map:new Map()}; }); on("planbetaling", v=>S.planbet=v); on("terugkerend", v=>S.terugkerend=v);
   db.doc("config/main").onSnapshot(snap => { if(snap.exists) S.config = Object.assign({}, CONFIG_DEFAULT, snap.data()); applyCats(); render(); });
   db.doc("saldo/stand").onSnapshot(snap => { S.stand = snap.exists ? Object.assign({}, snap.data()) : null; render(); }, () => {});
 }
@@ -3726,7 +4070,7 @@ function startData(){
 // Deze web-app vervangt de koppelingen van de artifact: de opslag is Firestore (live bij beide), wie kijkt wordt herkend
 // aan het Google-account (Barry en Ilona, vergeleken op een vingerafdruk van het e-mailadres zodat de adressen niet in de
 // openbare code staan) en het Drive-kiesvenster praat rechtstreeks met de Google Drive API met de toegang van wie kijkt.
-const APP_VERSIE = "2026-10-21.1";
+const APP_VERSIE = "2026-11-13.1";
 const FB_CONFIG = {"apiKey": "AIzaSyDcsTDpRz6SE43gDWE9MvSQMKq7BdCNysY", "authDomain": "maandbudget-70d4b.firebaseapp.com", "projectId": "maandbudget-70d4b", "storageBucket": "maandbudget-70d4b.firebasestorage.app", "messagingSenderId": "3900760101", "appId": "1:3900760101:web:5dd1e90e1602b8813f1fcc"};
 const H_BARRY = "aaf5a8cde7f61d40135a75250297fa6b07330cb45a1595c9f42533a78dcefcd1";
 const H_ILONA = "0627728dbc7c040caa94d870f3e136ff6f69f95323d473cece8882f05a93513f";
