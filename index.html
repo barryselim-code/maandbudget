@@ -1051,16 +1051,21 @@ function afschriftSaldoNieuwer(){
   if(D && iso(D)===iso(sva.datum) && Math.abs(num(st.saldo)-sva.saldo)<0.005) return null;
   return sva;
 }
-async function gebruikAfschriftSaldo(){
-  if(!A("ov.saldo")) return toast("Het saldo invullen staat voor jou uit.");
-  const sva = saldoVolgensAfschrift(); if(!sva) return toast("Er staat geen saldo in de afschriften.");
-  if(!db) return toast("Opslaan kan niet: geen verbinding met de opslag.");
+// Hybride saldo (13 nov): bij een import met "Saldo na mutatie" wordt het saldo van het afschrift automatisch het
+// startpunt (het afschrift is dan leidend); daarna kan iemand het met de hand aanpassen (bron "handmatig").
+// auto = {datum, saldo} bij een import: zonder rechtencheck op ov.saldo, zonder het paneel te sluiten, zonder eigen melding.
+async function gebruikAfschriftSaldo(auto){
+  const isAuto = !!(auto && auto.datum);
+  if(!isAuto && !A("ov.saldo")) return toast("Het saldo invullen staat voor jou uit.");
+  const sva = isAuto ? auto : saldoVolgensAfschrift(); if(!sva) return isAuto ? false : toast("Er staat geen saldo in de afschriften.");
+  if(!db) return isAuto ? false : toast("Opslaan kan niet: geen verbinding met de opslag.");
   // een creditcard die nog openstaat, blijft staan
   const sdn = standNu(periodN(0)), ccOpen = sdn && (sdn.ccNu || sdn.ccPeriode || sdn.ccNaLoondag);
   const D = sva.datum, eind = new Date(D.getFullYear(), D.getMonth(), D.getDate(), 23, 59, 59);
   const data = {saldo: Math.round(sva.saldo*100)/100, creditcard: ccOpen ? Math.round(sdn.cc*100)/100 : 0, ccDatum: ccOpen && sdn.ccD && sdn.ccD>D ? iso(sdn.ccD) : "",
     datum: iso(D), tijd: eind.toISOString(), door: PROFIELEN[WHO.profiel] || "", bron:"afschrift"};
-  try{ await db.doc("saldo/stand").set(data); S.stand = data; toast("Saldo uit het afschrift gebruikt"); const d=$("#sheet"); if(d && d.open) d.close(); render(); }
+  if(isAuto){ try{ await db.doc("saldo/stand").set(data); S.stand = data; return true; } catch(e){ return false; } }
+  try{ await db.doc("saldo/stand").set(data); S.stand = data; toast("Saldo uit het afschrift overgenomen"); const d=$("#sheet"); if(d && d.open) d.close(); render(); }
   catch(e){ toast(e.code==="not_granted" ? "Je hebt alleen leesrechten op deze tool." : "Bewaren lukte niet: "+(e.message||e.code)); }
 }
 function keywordsOf(it){
@@ -1543,7 +1548,7 @@ function standNu(p){
 // korte tekst bij het saldo: wanneer ingevuld en of het sindsdien is doorgerekend
 function standTekst(sd){
   const tijd = sd.tijd ? new Date(sd.tijd) : null, hhmm = tijd && !isNaN(tijd) ? String(tijd.getHours()).padStart(2,"0")+":"+String(tijd.getMinutes()).padStart(2,"0") : "";
-  if(sd.bron==="afschrift") return `uit het afschrift (eind van ${dkort(sd.D)}${sd.door?", gekozen door "+esc(sd.door):""})${sd.dagen ? `, doorgerekend tot vandaag${sd.geschat ? (sd.af.n ? " met het afschrift en wat verwacht werd" : " met wat verwacht werd") : " met het afschrift"}` : ""}`;
+  if(sd.bron==="afschrift") return `uit het afschrift (eind van ${dkort(sd.D)})${sd.dagen ? `, doorgerekend tot vandaag${sd.geschat ? (sd.af.n ? " met het afschrift en wat verwacht werd" : " met wat verwacht werd") : " met het afschrift"}` : ""}`;
   if(!sd.dagen) return `ingevuld${sd.door?" door "+esc(sd.door):""}${hhmm?" om "+hhmm:""}`;
   return `ingevuld op ${dkort(sd.D)}${sd.door?" door "+esc(sd.door):""} (${eur(sd.saldo0)}), doorgerekend tot vandaag${sd.geschat ? (sd.af.n ? " met het afschrift en wat verwacht werd" : " met wat verwacht werd") : " met het afschrift"}`;
 }
@@ -2963,7 +2968,12 @@ function openSaldo(){
   const ccOpen = sdn && (sdn.ccNu || sdn.ccPeriode || sdn.ccNaLoondag);
   const sal0 = sdn ? sdn.saldo : null, cc0 = ccOpen ? sdn.cc : 0, ccD0 = ccOpen && sdn.ccD && sdn.ccD>TODAY ? iso(sdn.ccD) : "";
   openSheet(`<div class="sheet-h"><h2>Wat staat er op de rekening?</h2><button type="button" class="iconbtn" data-close aria-label="Sluiten">✕</button></div>
-    ${(() => { const sva = afschriftSaldoNieuwer(); return sva ? `<div class="alert good"><span class="dot"></span><div><b>Volgens het afschrift: ${eur(sva.saldo)}</b><span class="small">Saldo aan het eind van ${dlang(sva.datum)} (kolom "Saldo na mutatie"). De tool rekent het daarna zelf door tot vandaag.</span><div class="btnrow" style="margin-top:8px"><button type="button" class="btn sm primary" id="sdAf">Gebruik als saldo</button></div></div></div>` : ""; })()}
+    ${(() => { const sva = saldoVolgensAfschrift(), st = S.stand;
+      if(!sva) return `<div class="alert"><span class="dot"></span><div><b>Nog geen saldo uit een afschrift</b><span class="small">Importeer een ING-bestand met de kolom "Saldo na mutatie" (formaat "Kommagescheiden (CSV)"), ook een bestand dat al eerder is geïmporteerd. Dan vult de tool het saldo vanzelf in; hier kun je het daarna aanpassen.</span></div></div>`;
+      const gelijk = st && st.bron==="afschrift" && st.datum===iso(sva.datum) && Math.abs(num(st.saldo)-sva.saldo)<0.005;
+      if(gelijk) return `<div class="alert good"><span class="dot"></span><div><b>Uit het afschrift: ${eur(sva.saldo)}</b><span class="small">Saldo aan het eind van ${dlang(sva.datum)}, doorgerekend tot vandaag. Wijkt de ING-app af, pas het hieronder aan; bij het volgende afschrift neemt de tool het saldo weer over.</span></div></div>`;
+      const ouder = st && parseIso(st.datum) > sva.datum;
+      return `<div class="alert ${ouder ? "" : "good"}"><span class="dot"></span><div><b>Volgens het afschrift: ${eur(sva.saldo)}</b><span class="small">Saldo aan het eind van ${dlang(sva.datum)}.${st ? (st.bron==="afschrift" ? "" : ` Nu gerekend met het saldo dat ${st.door ? esc(st.door)+" " : ""}op ${dkort(parseIso(st.datum))} met de hand invulde${ouder ? " (nieuwer dan het afschrift)" : ""}.`) : ""} Bij het volgende afschrift neemt de tool het saldo vanzelf over.</span><div class="btnrow" style="margin-top:8px"><button type="button" class="btn sm ${ouder ? "" : "primary"}" id="sdAf">Neem saldo uit het afschrift over</button></div></div></div>`; })()}
     <p class="hint">${sdn ? `Dit is het saldo dat op ${dkort(sdn.D)} ${sdn.bron==="afschrift" ? "uit het afschrift is overgenomen" : "is ingevuld"}, doorgerekend tot vandaag. Klopt het niet met de ING-app, vul dan in wat je daar ziet. Laat je het staan, dan blijft het zoals het is.` : "Kijk in de ING-app en vul in wat je ziet. Dit hoeft maar één keer: daarna rekent de tool het elke dag zelf door, met het afschrift en wat er verwacht wordt."} Ik reken het door tot loondag (${dkort(loondag)}).</p>
     <div class="field"><label for="sdSaldo">Saldo ING-rekening (€)</label><input id="sdSaldo" class="bigin" inputmode="decimal" placeholder="0,00" autocomplete="off" value="${sal0==null ? "" : esc(fmt(sal0))}"></div>
     <label class="sd-chk"><input type="checkbox" id="sdRood" ${sal0!=null && sal0<0 ? "checked" : ""}> De rekening staat rood (negatief saldo)</label>
@@ -2981,7 +2991,7 @@ function openSaldo(){
         lv.innerHTML = nu ? `Echt beschikbaar nu: <b>${eur(s-c)}</b> (saldo ${eur(s)} − creditcard ${eur(c)})` : c>0 ? `Echt beschikbaar nu: <b>${eur(s)}</b>. De creditcard (${eur(c)}) gaat af op ${dkort(dd)}.` : `Echt beschikbaar nu: <b>${eur(s)}</b>`;
       };
       iS.oninput = iC.oninput = iD.onchange = iR.onchange = upd; upd();
-      const sa = $("#sdAf"); if(sa) sa.onclick = gebruikAfschriftSaldo;
+      const sa = $("#sdAf"); if(sa) sa.onclick = () => gebruikAfschriftSaldo();
       $("#sdSave").onclick = async () => {
         const {sRaw, s, c} = lees();
         if(sRaw==="" || isNaN(s)) return toast("Vul het saldo in (bijv. 1234,56).");
@@ -2990,7 +3000,7 @@ function openSaldo(){
         if(c>0 && iD.value && !dd) return toast("De datum van de creditcard klopt niet.");
         if(c>0 && dd && dd<TODAY) return toast("Die datum is al geweest. Is de creditcard al afgeschreven, dan zit het in je saldo: laat het bedrag leeg.");
         if(!db) return toast("Opslaan kan niet: geen verbinding met de opslag.");
-        const data = {saldo: Math.round(s*100)/100, creditcard: c>0 ? Math.round(c*100)/100 : 0, ccDatum: (c>0 && dd) ? iso(dd) : "", datum: iso(TODAY), tijd: new Date().toISOString(), door: PROFIELEN[WHO.profiel] || ""};
+        const data = {saldo: Math.round(s*100)/100, creditcard: c>0 ? Math.round(c*100)/100 : 0, ccDatum: (c>0 && dd) ? iso(dd) : "", datum: iso(TODAY), tijd: new Date().toISOString(), door: PROFIELEN[WHO.profiel] || "", bron:"handmatig"};
         try{ await db.doc("saldo/stand").set(data); S.stand = data; toast("Bewaard"); d.close(); render(); }
         catch(e){ toast(e.code==="not_granted" ? "Je hebt alleen leesrechten op deze tool." : "Bewaren lukte niet: "+(e.message||e.code)); }
       };
@@ -3336,9 +3346,15 @@ async function saveStatement(text, naam){
     const sleutelRij = (res.toegevoegd.length ? res.toegevoegd : rows).reduce((m,r)=>r[0]>m?r[0]:m, "");
     const doel = res.buckets.find(b => b.rows.some(r=>r[0]===sleutelRij)) || res.buckets[res.buckets.length-1];
     S.afschriftSel = doel ? doel.id : null; S.advies.afschrift = null;
-    S.laatsteImport = {bestand, nieuw:res.toegevoegd, bekend:res.bekend, totaal:rows.length, metSaldo: Object.keys(saldiNieuw).length>0};
+    // het saldo uit dit bestand is leidend, als het bestand het nieuwste saldo van alle afschriften bevat
+    const fDag = Object.keys(saldiNieuw).sort().pop() || null;
+    const oudDag = bestaand.reduce((m,a)=>Object.keys(a.saldi||{}).reduce((x,k)=>k>x?k:x, m), "");
+    let saldoGezet = null;
+    if(fDag && fDag >= oudDag){ const auto = {datum:parseIso(fDag), saldo:num(saldiNieuw[fDag])};
+      if(auto.datum && await gebruikAfschriftSaldo(auto)) saldoGezet = auto; }
+    S.laatsteImport = {bestand, nieuw:res.toegevoegd, bekend:res.bekend, totaal:rows.length, metSaldo: !!fDag, saldoGezet, saldoOuder: !!(fDag && !saldoGezet && fDag < oudDag)};
     const n = res.toegevoegd.length;
-    toast(n ? n+" nieuwe regel"+(n===1?"":"s")+" toegevoegd"+(res.bekend?", "+res.bekend+" al bekend (overgeslagen)":"") : "Niets nieuws: alle "+rows.length+" regels stonden er al in");
+    toast((n ? n+" nieuwe regel"+(n===1?"":"s")+" toegevoegd"+(res.bekend?", "+res.bekend+" al bekend (overgeslagen)":"") : "Niets nieuws: alle "+rows.length+" regels stonden er al in") + (saldoGezet ? ". Saldo bijgewerkt: "+eur(saldoGezet.saldo) : ""));
     render();
   } finally { IMPORT_BUSY = false; }
 }
@@ -3348,8 +3364,12 @@ function laatsteImportKaart(){
   const n = li.nieuw.length, dat = r => dkort(parseIso(r[0]));
   const kop = n ? esc(n+" nieuwe regel"+(n===1?"":"s")+" toegevoegd") : "Niets nieuws in dit bestand";
   const meta = esc(li.bestand)+" · "+li.totaal+" regels gelezen, "+li.bekend+" al bekend en overgeslagen";
-  const sva = li.metSaldo && Z("ov.saldo") ? afschriftSaldoNieuwer() : null;
-  const saldoVoorstel = sva ? `<div class="alert good"><span class="dot"></span><div><b>Saldo volgens het afschrift: ${eur(sva.saldo)}</b><span class="small">Aan het eind van ${dlang(sva.datum)}.${S.stand ? ` Nu gerekend met het saldo van ${dkort(parseIso(S.stand.datum))}.` : " Er is nog geen saldo ingevuld."}</span>${A("ov.saldo") ? `<div class="btnrow" style="margin-top:8px"><button type="button" class="btn sm primary" data-saldoaf>Gebruik als saldo</button></div>` : ""}</div></div>` : "";
+  const sg = li.saldoGezet;
+  const saldoVoorstel = !Z("ov.saldo") ? "" : sg
+    ? `<div class="alert good"><span class="dot"></span><div><b>Saldo bijgewerkt uit het afschrift: ${eur(sg.saldo)}</b><span class="small">Aan het eind van ${dlang(sg.datum)}; de tool rekent vanaf daar door tot vandaag. Klopt het niet met de ING-app? Pas het aan bij "Op de rekening".</span>${A("ov.saldo") ? `<div class="btnrow" style="margin-top:8px"><button type="button" class="btn sm" data-saldo>Saldo aanpassen</button></div>` : ""}</div></div>`
+    : li.saldoOuder ? `<div class="alert"><span class="dot"></span><div><b>Saldo niet bijgewerkt</b><span class="small">Dit bestand is ouder dan het saldo dat al uit een afschrift kwam.</span></div></div>`
+    : !li.metSaldo ? `<div class="alert warn"><span class="dot"></span><div><b>Geen saldo in dit bestand</b><span class="small">Er staat geen kolom "Saldo na mutatie" in. Kies in de ING-app of Mijn ING bij downloaden het formaat "Kommagescheiden (CSV)"; dan neemt de tool het saldo vanzelf over.</span></div></div>`
+    : `<div class="alert warn"><span class="dot"></span><div><b>Saldo niet bijgewerkt</b><span class="small">Het opslaan van het saldo lukte niet. Probeer het bij "Op de rekening".</span></div></div>`;
   if(!n) return `<div class="alert good"><span class="dot"></span><div><b>${kop}</b><span class="small">${meta}</span></div></div>${saldoVoorstel}`;
   const rows = li.nieuw.slice(0,15).map(r => `<div class="kv"><span>${dat(r)} · ${esc(r[1]||"Onbekend")}</span><b>${r[2]<0?eur(-r[2]):"+"+eur(r[2])}</b></div>`).join("");
   return accCard("af:laatsteimport", kop, meta, `<div class="detrows">${rows}${n>15?`<div class="small muted">en nog ${n-15} meer</div>`:""}</div>`)+saldoVoorstel;
@@ -3841,7 +3861,7 @@ function bindAll(){ if(S.focusDet) setTimeout(focusNa, 80);
     catch(e){ b.disabled=false; toast(e.code==="not_granted"?"Je hebt alleen leesrechten.":"Bijwerken lukte niet."); } });
   app.querySelectorAll("[data-herindeel]").forEach(b=>b.onclick=()=>{ if(!magAanpassen(b)) return toast("Anders indelen staat voor jou uit."); openHerindeel(b.dataset.herindeel); });
   app.querySelectorAll("[data-bij]").forEach(b=>b.onclick=()=>{ if(!A("af.bij")) return toast("Bijschrijvingen indelen staat voor jou uit."); openBijIndeel(b.dataset.bij); });
-  app.querySelectorAll("[data-saldoaf]").forEach(b=>b.onclick=gebruikAfschriftSaldo);
+  app.querySelectorAll("[data-saldoaf]").forEach(b=>b.onclick=()=>gebruikAfschriftSaldo());
   app.querySelectorAll("[data-tk]").forEach(b=>b.onclick=()=>tkActie(b.dataset.tk));
   app.querySelectorAll("[data-indelen]").forEach(b=>b.onclick=()=>{ if(!A("af.indelen")) return toast("Indelen staat voor jou uit."); openIndelen(+b.dataset.indelen); });
   // v2 layout: segments, "toon alle", tiles and bottom sheets
@@ -4070,7 +4090,7 @@ function startData(){
 // Deze web-app vervangt de koppelingen van de artifact: de opslag is Firestore (live bij beide), wie kijkt wordt herkend
 // aan het Google-account (Barry en Ilona, vergeleken op een vingerafdruk van het e-mailadres zodat de adressen niet in de
 // openbare code staan) en het Drive-kiesvenster praat rechtstreeks met de Google Drive API met de toegang van wie kijkt.
-const APP_VERSIE = "2026-11-13.1";
+const APP_VERSIE = "2026-11-13.2";
 const FB_CONFIG = {"apiKey": "AIzaSyDcsTDpRz6SE43gDWE9MvSQMKq7BdCNysY", "authDomain": "maandbudget-70d4b.firebaseapp.com", "projectId": "maandbudget-70d4b", "storageBucket": "maandbudget-70d4b.firebasestorage.app", "messagingSenderId": "3900760101", "appId": "1:3900760101:web:5dd1e90e1602b8813f1fcc"};
 const H_BARRY = "aaf5a8cde7f61d40135a75250297fa6b07330cb45a1595c9f42533a78dcefcd1";
 const H_ILONA = "0627728dbc7c040caa94d870f3e136ff6f69f95323d473cece8882f05a93513f";
